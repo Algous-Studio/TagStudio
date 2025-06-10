@@ -24,3 +24,18 @@ def test_refresh_new_files(library, exclude_mode):
 
     # Then
     assert registry.files_not_in_library == [Path("FOO.MD")]
+
+
+@pytest.mark.parametrize("library", [TemporaryDirectory()], indirect=True)
+def test_refresh_exr_sequence(library):
+    seq_dir = Path(__file__).parent / "../fixtures/exr_sequence"
+    for f in seq_dir.iterdir():
+        target = library.library_dir / f.name
+        target.write_text("")
+    registry = RefreshDirTracker(library=library)
+    library.included_files.clear()
+
+    list(registry.refresh_dir(library.library_dir))
+
+    assert registry.files_not_in_library == [Path("test_sequence_0001.exr")]
+    assert registry.sequence_counts.get(Path("test_sequence_0001.exr")) == 100

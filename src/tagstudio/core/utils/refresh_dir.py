@@ -1,3 +1,4 @@
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime as dt
@@ -31,6 +32,8 @@ GLOBAL_IGNORE_SET: set[str] = set(
 class RefreshDirTracker:
     library: Library
     files_not_in_library: list[Path] = field(default_factory=list)
+    sequence_counts: dict[Path, int] = field(default_factory=dict)
+    sequence_patterns: dict[Path, str] = field(default_factory=dict)
 
     @property
     def files_count(self) -> int:
@@ -39,18 +42,23 @@ class RefreshDirTracker:
     def save_new_files(self):
         """Save the list of files that are not in the library."""
         if self.files_not_in_library:
-            entries = [
-                Entry(
-                    path=entry_path,
-                    folder=self.library.folder,
-                    fields=[],
-                    date_added=dt.now(),
+            entries: list[Entry] = []
+            for entry_path in self.files_not_in_library:
+                entries.append(
+                    Entry(
+                        path=entry_path,
+                        folder=self.library.folder,
+                        fields=[],
+                        date_added=dt.now(),
+                        frame_count=self.sequence_counts.get(entry_path, 1),
+                        sequence_pattern=self.sequence_patterns.get(entry_path),
+                    )
                 )
-                for entry_path in self.files_not_in_library
-            ]
             self.library.add_entries(entries)
 
         self.files_not_in_library = []
+        self.sequence_counts.clear()
+        self.sequence_patterns.clear()
 
         yield
 
@@ -63,9 +71,16 @@ class RefreshDirTracker:
         start_time_loop = time()
 
         self.files_not_in_library = []
+        self.sequence_counts = {}
+        self.sequence_patterns = {}
         dir_file_count = 0
+        prev_prefix: Path | None = None
+        prev_num: int | None = None
+        seq_first: Path | None = None
+        frame_count: int = 0
+        seq_pattern: str | None = None
 
-        for f in lib_path.glob("**/*"):
+        for f in sorted(lib_path.glob("**/*")):
             end_time_loop = time()
             # Yield output every 1/30 of a second
             if (end_time_loop - start_time_loop) > 0.034:
@@ -96,9 +111,55 @@ class RefreshDirTracker:
             self.library.included_files.add(f)
 
             relative_path = f.relative_to(lib_path)
+            # Sequence detection for EXR files
+            match = re.match(r"(.*?)(\d+)\.exr$", f.name, re.IGNORECASE)
+            if match:
+                prefix = f.parent / match.group(1)
+                number = int(match.group(2))
+                if (
+                    prev_prefix is not None
+                    and prefix == prev_prefix
+                    and prev_num is not None
+                    and number == prev_num + 1
+                ):
+                    frame_count += 1
+                    prev_num = number
+                    continue
+                else:
+                    if seq_first is not None and not self.library.has_path_entry(seq_first):
+                        self.files_not_in_library.append(seq_first)
+                        self.sequence_counts[seq_first] = frame_count
+                        if seq_pattern:
+                            self.sequence_patterns[seq_first] = seq_pattern
+                    prev_prefix = prefix
+                    prev_num = number
+                    seq_first = relative_path
+                    frame_count = 1
+                    digits = len(match.group(2))
+                    seq_pattern = (f.parent / f"{match.group(1)}%0{digits}d.exr").as_posix()
+                    continue
+
+            # flush pending sequence if leaving sequence
+            if seq_first is not None and not self.library.has_path_entry(seq_first):
+                self.files_not_in_library.append(seq_first)
+                self.sequence_counts[seq_first] = frame_count
+                if seq_pattern:
+                    self.sequence_patterns[seq_first] = seq_pattern
+                seq_first = None
+                prev_prefix = None
+                prev_num = None
+                frame_count = 0
+                seq_pattern = None
+
             # TODO - load these in batch somehow
             if not self.library.has_path_entry(relative_path):
                 self.files_not_in_library.append(relative_path)
+
+        if seq_first is not None and not self.library.has_path_entry(seq_first):
+            self.files_not_in_library.append(seq_first)
+            self.sequence_counts[seq_first] = frame_count
+            if seq_pattern:
+                self.sequence_patterns[seq_first] = seq_pattern
 
         end_time_total = time()
         yield dir_file_count

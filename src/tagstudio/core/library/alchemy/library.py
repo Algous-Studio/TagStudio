@@ -483,6 +483,8 @@ class Library:
                     self.apply_db8_schema_changes(session)
                 if db_version < 9:
                     self.apply_db9_schema_changes(session)
+                if db_version < 10:
+                    self.apply_db10_schema_changes(session)
 
                 # now the data changes
                 if db_version == 6:
@@ -615,6 +617,26 @@ class Library:
             session.merge(entry).filename = entry.path.name
         session.commit()
         logger.info("[Library][Migration] Populated filename column in entries table")
+
+    def apply_db10_schema_changes(self, session: Session):
+        """Apply database schema changes introduced in DB_VERSION 10."""
+        add_frame_column = text(
+            "ALTER TABLE entries ADD COLUMN frame_count INTEGER DEFAULT 1 NOT NULL"
+        )
+        add_pattern_column = text(
+            "ALTER TABLE entries ADD COLUMN sequence_pattern TEXT"
+        )
+        try:
+            session.execute(add_frame_column)
+            session.execute(add_pattern_column)
+            session.commit()
+            logger.info("[Library][Migration] Added sequence columns to entries table")
+        except Exception as e:
+            logger.error(
+                "[Library][Migration] Could not create sequence columns!",
+                error=e,
+            )
+            session.rollback()
 
     @property
     def default_fields(self) -> list[BaseField]:

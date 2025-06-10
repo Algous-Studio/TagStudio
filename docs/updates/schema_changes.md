@@ -55,6 +55,16 @@ Migration from the legacy JSON format is provided via a walkthrough when opening
 
 | Used From                                                               | Used Until | Format | Location                                        |
 | ----------------------------------------------------------------------- | ---------- | ------ | ----------------------------------------------- |
-| [v9.5.2](https://github.com/TagStudioDev/TagStudio/releases/tag/v9.5.2) | _Current_  | SQLite | `<Library Folder>`/.TagStudio/ts_library.sqlite |
+| [v9.5.2](https://github.com/TagStudioDev/TagStudio/releases/tag/v9.5.2) | Used Until v9.5.2 | SQLite | `<Library Folder>`/.TagStudio/ts_library.sqlite |
 
 -   Adds the `filename` column to the `entries` table. Used for sorting entries by filename in search results.
+
+---
+
+## DB_VERSION 10
+
+| Used From | Used Until | Format | Location |
+| --------- | ---------- | ------ | -------- |
+| _Current_ | _Current_  | SQLite | `<Library Folder>`/.TagStudio/ts_library.sqlite |
+
+- Adds `frame_count` and `sequence_pattern` columns to `entries` for EXR sequence support.

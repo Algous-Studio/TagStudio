@@ -68,6 +68,7 @@ Translation hosting generously provided by [Weblate](https://weblate.org/en/). C
 
 -   Create libraries/vaults centered around a system directory. Libraries contain a series of entries: the representations of your files combined with metadata fields. Each entry represents a file in your library’s directory, and is linked to its location.
 -   Address moved, deleted, or otherwise "unlinked" files by using the "Fix Unlinked Entries" option in the Tools menu.
+-   Scan and play OpenEXR image sequences like videos.
 
 ### Tagging + Custom Metadata
 

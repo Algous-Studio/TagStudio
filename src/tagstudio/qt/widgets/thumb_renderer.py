@@ -6,6 +6,7 @@
 import contextlib
 import hashlib
 import math
+import re
 import struct
 import zipfile
 from copy import deepcopy
@@ -66,9 +67,7 @@ from tagstudio.qt.helpers.file_tester import is_readable_video
 from tagstudio.qt.helpers.gradient import four_corner_gradient
 from tagstudio.qt.helpers.image_effects import replace_transparent_pixels
 from tagstudio.qt.helpers.text_wrapper import wrap_full_text
-from tagstudio.qt.helpers.vendored.pydub.audio_segment import (
-    _AudioSegment as AudioSegment,
-)
+from tagstudio.qt.helpers.vendored.pydub.audio_segment import _AudioSegment as AudioSegment
 from tagstudio.qt.resource_manager import ResourceManager
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -121,7 +120,9 @@ class ThumbRenderer(QObject):
             url (Path): The file url to assess. "$LOADING" will return the loading graphic.
         """
         ext = url.suffix.lower()
-        types: set[MediaType] = MediaCategories.get_types(ext, mime_fallback=True)
+        types: set[MediaType] = MediaCategories.get_types(
+            ext, mime_fallback=True, filename=str(url)
+        )
 
         # Manual icon overrides.
         if ext in {".gif", ".vtf"}:
@@ -1074,7 +1075,12 @@ class ThumbRenderer(QObject):
         frame: MatLike | None = None
         try:
             if is_readable_video(filepath):
-                video = cv2.VideoCapture(str(filepath), cv2.CAP_FFMPEG)
+                pattern = str(filepath)
+                match = re.search(r"(\d+)\.exr$", filepath.name, re.IGNORECASE)
+                if match:
+                    digits = len(match.group(1))
+                    pattern = pattern.replace(match.group(1) + ".exr", f"%0{digits}d.exr")
+                video = cv2.VideoCapture(pattern, cv2.CAP_FFMPEG)
                 # TODO: Move this check to is_readable_video()
                 if video.get(cv2.CAP_PROP_FRAME_COUNT) <= 0:
                     raise cv2.error("File is invalid or has 0 frames")

@@ -37,13 +37,7 @@ from PySide6.QtGui import (
     QMouseEvent,
     QPalette,
 )
-from PySide6.QtWidgets import (
-    QApplication,
-    QFileDialog,
-    QMessageBox,
-    QPushButton,
-    QScrollArea,
-)
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox, QPushButton, QScrollArea
 
 # this import has side-effect of import PySide resources
 import tagstudio.qt.resources_rc  # noqa: F401
@@ -1473,6 +1467,10 @@ class QtDriver(DriverMixin, QObject):
             )
             item_thumb.assign_badge(BadgeType.ARCHIVED, entry.is_archived)
             item_thumb.assign_badge(BadgeType.FAVORITE, entry.is_favorite)
+            if entry.suffix == "exr" and entry.frame_count > 1:
+                item_thumb.set_count(str(entry.frame_count))
+            else:
+                item_thumb.set_count("")
             item_thumb.update_clickable(
                 clickable=(
                     lambda checked=False, item_id=entry.id: self.toggle_item_selection(
