@@ -355,9 +355,12 @@ class PreviewThumb(QWidget):
     def _update_media(self, filepath: Path, type: MediaType) -> dict[str, int]:
         stats: dict[str, int] = {}
 
-        self.media_player.play(filepath)
+        if type == MediaType.IMAGE_SEQUENCE:
+            self.media_player.play_sequence(str(filepath))
+        else:
+            self.media_player.play(filepath)
 
-        if type == MediaType.VIDEO:
+        if type in {MediaType.VIDEO, MediaType.IMAGE_SEQUENCE}:
             try:
                 success, size = self._get_video_res(str(filepath))
                 if success:
@@ -377,7 +380,10 @@ class PreviewThumb(QWidget):
             except cv2.error as e:
                 logger.error("[PreviewThumb] Could not play video", filepath=filepath, error=e)
 
-        self.switch_preview("video" if type == MediaType.VIDEO else "audio")
+        if type in {MediaType.VIDEO, MediaType.IMAGE_SEQUENCE}:
+            self.switch_preview("video")
+        else:
+            self.switch_preview("audio")
         stats["duration"] = self.media_player.player.duration() * 1000
         return stats
 
@@ -386,10 +392,16 @@ class PreviewThumb(QWidget):
         ext = filepath.suffix.lower()
         stats: dict[str, int] = {}
 
+        types = MediaCategories.get_types(ext, mime_fallback=True, filename=str(filepath))
+
         # Video
-        if MediaCategories.is_ext_in_category(
-            ext, MediaCategories.VIDEO_TYPES, mime_fallback=True
-        ) and is_readable_video(filepath):
+        if (
+            MediaType.VIDEO in types
+            and MediaCategories.is_ext_in_category(
+                ext, MediaCategories.VIDEO_TYPES, mime_fallback=True
+            )
+            and is_readable_video(filepath)
+        ):
             stats = self._update_media(filepath, MediaType.VIDEO)
 
         # Audio
@@ -411,6 +423,9 @@ class PreviewThumb(QWidget):
             ext, MediaCategories.IMAGE_ANIMATED_TYPES, mime_fallback=True
         ):
             stats = self._update_animation(filepath, ext)
+
+        elif MediaType.IMAGE_SEQUENCE in types:
+            stats = self._update_media(filepath, MediaType.IMAGE_SEQUENCE)
 
         # Other Types (Including Images)
         else:

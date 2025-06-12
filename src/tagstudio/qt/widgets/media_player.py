@@ -426,11 +426,15 @@ class MediaPlayer(QGraphicsView):
         if not self.is_paused:
             self.player.stop()
             self.player.setSource(QUrl.fromLocalFile(self.filepath))
-
+            
             if self.autoplay.isChecked():
                 self.player.play()
         else:
             self.player.setSource(QUrl.fromLocalFile(self.filepath))
+
+    def play_sequence(self, pattern: str) -> None:
+        """Play a sequence of images as a video using FFMPEG pattern."""
+        self.play(Path(pattern))
 
     def load_toggle_play_icon(self, playing: bool) -> None:
         icon = self.driver.rm.pause_icon if playing else self.driver.rm.play_icon

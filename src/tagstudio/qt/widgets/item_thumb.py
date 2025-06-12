@@ -15,14 +15,7 @@ import structlog
 from PIL import Image, ImageQt
 from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, QUrl
 from PySide6.QtGui import QAction, QDrag, QEnterEvent, QPixmap
-from PySide6.QtWidgets import (
-    QBoxLayout,
-    QCheckBox,
-    QHBoxLayout,
-    QLabel,
-    QVBoxLayout,
-    QWidget,
-)
+from PySide6.QtWidgets import QBoxLayout, QCheckBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from tagstudio.core.constants import TAG_ARCHIVED, TAG_FAVORITE
 from tagstudio.core.library.alchemy.enums import ItemType
@@ -369,7 +362,7 @@ class ItemThumb(FlowWidget):
         ext = filename.suffix
         if ext and ext.startswith(".") is False:
             ext = "." + ext
-        media_types: set[MediaType] = MediaCategories.get_types(ext)
+        media_types: set[MediaType] = MediaCategories.get_types(ext, filename=str(filename))
         if (
             not MediaCategories.is_ext_in_category(ext, MediaCategories.IMAGE_TYPES)
             or MediaCategories.is_ext_in_category(ext, MediaCategories.IMAGE_RAW_TYPES)
@@ -387,7 +380,11 @@ class ItemThumb(FlowWidget):
         ):
             self.ext_badge.setHidden(False)
             self.ext_badge.setText(ext.upper()[1:] or filename.stem.upper())
-            if MediaType.VIDEO in media_types or MediaType.AUDIO in media_types:
+            if (
+                MediaType.VIDEO in media_types
+                or MediaType.AUDIO in media_types
+                or MediaType.IMAGE_SEQUENCE in media_types
+            ):
                 self.count_badge.setHidden(False)
         else:
             if self.mode == ItemType.ENTRY:

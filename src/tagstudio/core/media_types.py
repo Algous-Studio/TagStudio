@@ -5,6 +5,7 @@
 
 import logging
 import mimetypes
+import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -42,6 +43,7 @@ class MediaType(str, Enum):
     IMAGE_RAW = "image_raw"
     IMAGE_VECTOR = "image_vector"
     IMAGE = "image"
+    IMAGE_SEQUENCE = "image_sequence"
     INSTALLER = "installer"
     IWORK = "iwork"
     MATERIAL = "material"
@@ -273,6 +275,7 @@ class MediaCategories:
         ".gif",
         ".webp",
     }
+    _IMAGE_SEQUENCE_SET: set[str] = {".exr"}
     _IMAGE_RAW_SET: set[str] = {
         ".arw",
         ".cr2",
@@ -470,6 +473,12 @@ class MediaCategories:
         is_iana=False,
         name="animated image",
     )
+    IMAGE_SEQUENCE_TYPES = MediaCategory(
+        media_type=MediaType.IMAGE_SEQUENCE,
+        extensions=_IMAGE_SEQUENCE_SET,
+        is_iana=False,
+        name="image sequence",
+    )
     IMAGE_RAW_TYPES = MediaCategory(
         media_type=MediaType.IMAGE_RAW,
         extensions=_IMAGE_RAW_SET,
@@ -604,6 +613,7 @@ class MediaCategories:
         EBOOK_TYPES,
         FONT_TYPES,
         IMAGE_ANIMATED_TYPES,
+        IMAGE_SEQUENCE_TYPES,
         IMAGE_RAW_TYPES,
         IMAGE_TYPES,
         IMAGE_VECTOR_TYPES,
@@ -627,19 +637,28 @@ class MediaCategories:
     ]
 
     @staticmethod
-    def get_types(ext: str, mime_fallback: bool = False) -> set[MediaType]:
+    def get_types(
+        ext: str,
+        mime_fallback: bool = False,
+        filename: str | None = None,
+    ) -> set[MediaType]:
         """Return a set of MediaTypes given a file extension.
 
         Args:
             ext (str): File extension with a leading "." and in all lowercase.
             mime_fallback (bool): Flag to guess MIME type if no set matches are made.
+            filename (str | None): Optional filename to detect sequences.
         """
         media_types: set[MediaType] = set()
         # mime_guess: bool = False
 
         for cat in MediaCategories.ALL_CATEGORIES:
             if ext in cat.extensions:
-                media_types.add(cat.media_type)
+                if cat.media_type == MediaType.IMAGE_SEQUENCE:
+                    if filename is not None and re.search(r"\d+\.exr$", filename, re.IGNORECASE):
+                        media_types.add(cat.media_type)
+                else:
+                    media_types.add(cat.media_type)
             elif mime_fallback and cat.is_iana:
                 mime_type: str = mimetypes.guess_type(Path("x" + ext), strict=False)[0]
                 if mime_type and mime_type.startswith(cat.media_type.value):

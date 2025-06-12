@@ -7,6 +7,7 @@ With TagStudio opened, start by creating a new library or opening an existing on
 ## Refreshing the Library
 
 Libraries under 10,000 files automatically scan for new or modified files when opened. In order to refresh the library manually, select "Refresh Directories" under the File menu.
+OpenEXR image sequences are detected during a refresh and will appear as single entries with their full frame count.
 
 ## Adding Tags to File Entries
 

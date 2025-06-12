@@ -8,6 +8,7 @@ from tagstudio.core.library.alchemy.enums import BrowsingState
 from tagstudio.core.library.alchemy.fields import TextField, _FieldID
 from tagstudio.core.library.alchemy.library import Library
 from tagstudio.core.library.alchemy.models import Entry, Tag
+from tagstudio.core.utils.refresh_dir import RefreshDirTracker
 
 
 def test_library_add_alias(library: Library, generate_tag):
@@ -542,3 +543,17 @@ def test_filetype_return_one_filetype(file_mediatypes_library: Library, filetype
 def test_mediatype_search(library: Library, mediatype, num_of_mediatype):
     results = library.search_library(BrowsingState.from_mediatype(mediatype), page_size=500)
     assert len(results.items) == num_of_mediatype
+
+
+@pytest.mark.parametrize("library", [TemporaryDirectory()], indirect=True)
+def test_scan_exr_sequence(library: Library):
+    seq_dir = Path(__file__).parent / "fixtures" / "exr_sequence"
+    for f in seq_dir.iterdir():
+        (library.library_dir / f.name).write_text("")
+
+    tracker = RefreshDirTracker(library=library)
+    list(tracker.refresh_dir(library.library_dir))
+    tracker.save_new_files()
+    assert len(list(library.get_entries())) == 1
+    entry = next(library.get_entries())
+    assert entry.frame_count == 100

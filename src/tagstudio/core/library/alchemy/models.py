@@ -192,6 +192,8 @@ class Entry(Base):
     date_created: Mapped[dt | None]
     date_modified: Mapped[dt | None]
     date_added: Mapped[dt | None]
+    frame_count: Mapped[int] = mapped_column(default=1)
+    sequence_pattern: Mapped[str | None] = mapped_column(nullable=True)
 
     tags: Mapped[set[Tag]] = relationship(secondary="tag_entries")
 
@@ -229,6 +231,8 @@ class Entry(Base):
         date_created: dt | None = None,
         date_modified: dt | None = None,
         date_added: dt | None = None,
+        frame_count: int = 1,
+        sequence_pattern: str | None = None,
     ) -> None:
         self.path = path
         self.folder = folder
@@ -243,6 +247,8 @@ class Entry(Base):
         self.date_modified = date_modified
         # The date this entry was added to the library.
         self.date_added = date_added
+        self.frame_count = frame_count
+        self.sequence_pattern = sequence_pattern
 
         for field in fields:
             if isinstance(field, TextField):
