@@ -147,6 +147,10 @@ class SettingsPanel(PanelWidget):
             Translations["settings.show_filenames_in_grid"], self.show_filenames_checkbox
         )
 
+        # Group Sequential Frames
+        self.group_sequences_checkbox = QCheckBox()
+        self.group_sequences_checkbox.setChecked(self.driver.settings.group_sequences)
+        form_layout.addRow(Translations["settings.group_sequences"], self.group_sequences_checkbox)
         # Page Size
         self.page_size_line_edit = QLineEdit()
         self.page_size_line_edit.setText(str(self.driver.settings.page_size))
@@ -234,6 +238,7 @@ class SettingsPanel(PanelWidget):
             "open_last_loaded_on_startup": self.open_last_lib_checkbox.isChecked(),
             "autoplay": self.autoplay_checkbox.isChecked(),
             "show_filenames_in_grid": self.show_filenames_checkbox.isChecked(),
+            "group_sequences": self.group_sequences_checkbox.isChecked(),
             "page_size": int(self.page_size_line_edit.text()),
             "show_filepath": self.filepath_combobox.currentData(),
             "theme": self.theme_combobox.currentData(),
@@ -250,6 +255,7 @@ class SettingsPanel(PanelWidget):
         driver.settings.open_last_loaded_on_startup = settings["open_last_loaded_on_startup"]
         driver.settings.autoplay = settings["autoplay"]
         driver.settings.show_filenames_in_grid = settings["show_filenames_in_grid"]
+        driver.settings.group_sequences = settings["group_sequences"]
         driver.settings.page_size = settings["page_size"]
         driver.settings.show_filepath = settings["show_filepath"]
         driver.settings.theme = settings["theme"]

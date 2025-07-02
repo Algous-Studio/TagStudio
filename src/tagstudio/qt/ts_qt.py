@@ -1588,20 +1588,24 @@ class QtDriver(DriverMixin, QObject):
         )
         
         # refresh sequence registry and collapse results
-        list(self.lib.refresh_sequences())
-        seq_map = self.lib.sequence_registry.entry_to_sequence
         display_entries: list[Entry] = []
-        self.frame_counts = []
-        seen_posters: set[int] = set()
-        for item in results.items:
-            seq = seq_map.get(item.id)
-            if seq and seq.poster and seq.poster.id not in seen_posters:
-                display_entries.append(seq.poster)
-                self.frame_counts.append(seq.frame_count)
-                seen_posters.add(seq.poster.id)
-            elif not seq:
-                display_entries.append(item)
-                self.frame_counts.append(None)
+        if self.settings.group_sequences:
+            list(self.lib.refresh_sequences())
+            seq_map = self.lib.sequence_registry.entry_to_sequence
+            self.frame_counts = []
+            seen_posters: set[int] = set()
+            for item in results.items:
+                seq = seq_map.get(item.id)
+                if seq and seq.poster and seq.poster.id not in seen_posters:
+                    display_entries.append(seq.poster)
+                    self.frame_counts.append(seq.frame_count)
+                    seen_posters.add(seq.poster.id)
+                elif not seq:
+                    display_entries.append(item)
+                    self.frame_counts.append(None)
+        else:
+            display_entries = results.items
+            self.frame_counts = [None] * len(display_entries)
 
         # update page content
         self.frame_content = [e.id for e in display_entries]

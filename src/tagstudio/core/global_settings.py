@@ -47,6 +47,7 @@ class GlobalSettings(BaseModel):
     autoplay: bool = Field(default=True)
     loop: bool = Field(default=True)
     show_filenames_in_grid: bool = Field(default=True)
+    group_sequences: bool = Field(default=True)
     page_size: int = Field(default=100)
     show_filepath: ShowFilepathOption = Field(default=ShowFilepathOption.DEFAULT)
     theme: Theme = Field(default=Theme.SYSTEM)
