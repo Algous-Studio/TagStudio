@@ -88,7 +88,8 @@ from tagstudio.qt.translations import Translations
 
 if TYPE_CHECKING:
     from sqlalchemy import Select
-
+    
+    from tagstudio.core.utils.sequences import SequenceRegistry
 
 logger = structlog.get_logger(__name__)
 
@@ -215,6 +216,20 @@ class Library:
     SQL_FILENAME: str = "ts_library.sqlite"
     JSON_FILENAME: str = "ts_library.json"
 
+    _sequence_registry: "SequenceRegistry | None" = None
+
+    @property
+    def sequence_registry(self) -> "SequenceRegistry":
+        if self._sequence_registry is None:
+            from tagstudio.core.utils.sequences import SequenceRegistry
+
+            self._sequence_registry = SequenceRegistry(library=self)
+        return self._sequence_registry
+
+    def refresh_sequences(self) -> Iterator[int]:
+        """Update internal sequence registry."""
+        return self.sequence_registry.refresh_sequences()
+    
     def close(self):
         if self.engine:
             self.engine.dispose()

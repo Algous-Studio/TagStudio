@@ -207,7 +207,9 @@ class QtDriver(DriverMixin, QObject):
         self.thumb_threads: list[Consumer] = []
         self.thumb_cutoff: float = time.time()
         self.selected: list[int] = []  # Selected Entry IDs
-
+        # Frame counts for items on the current page (used for sequences)
+        self.frame_counts: list[int | None] = []
+        
         self.SIGTERM.connect(self.handle_sigterm)
 
         self.global_settings_path = DEFAULT_GLOBAL_SETTINGS_PATH
@@ -1428,6 +1430,7 @@ class QtDriver(DriverMixin, QObject):
         entries: list[Entry] = list(self.lib.get_entries_full(self.frame_content))
         logger.info("[QtDriver] Building Filenames...")
         filenames: list[Path] = [self.lib.library_dir / e.path for e in entries]
+        counts = self.frame_counts
         logger.info("[QtDriver] Done! Processing ItemThumbs...")
         for index, item_thumb in enumerate(self.item_thumbs, start=0):
             entry = None
@@ -1444,6 +1447,10 @@ class QtDriver(DriverMixin, QObject):
 
             item_thumb.set_mode(ItemType.ENTRY)
             item_thumb.set_item_id(entry.id)
+            if index < len(counts) and counts[index]:
+                item_thumb.set_count(str(counts[index]))
+            else:
+                item_thumb.set_count("")
             item_thumb.show()
             is_loading = True
             self.thumb_job_queue.put(
@@ -1492,6 +1499,11 @@ class QtDriver(DriverMixin, QObject):
                     f, e_id
                 )
             )
+            
+            if index < len(counts) and counts[index]:
+                item_thumb.set_count(str(counts[index]))
+            else:
+                item_thumb.set_count("")
 
             # Restore Selected Borders
             is_selected = item_thumb.item_id in self.selected
@@ -1574,9 +1586,26 @@ class QtDriver(DriverMixin, QObject):
                 time_span=format_timespan(end_time - start_time),
             )
         )
+        
+        # refresh sequence registry and collapse results
+        list(self.lib.refresh_sequences())
+        seq_map = self.lib.sequence_registry.entry_to_sequence
+        display_entries: list[Entry] = []
+        self.frame_counts = []
+        seen_posters: set[int] = set()
+        for item in results.items:
+            seq = seq_map.get(item.id)
+            if seq and seq.poster and seq.poster.id not in seen_posters:
+                display_entries.append(seq.poster)
+                self.frame_counts.append(seq.frame_count)
+                seen_posters.add(seq.poster.id)
+            elif not seq:
+                display_entries.append(item)
+                self.frame_counts.append(None)
 
         # update page content
-        self.frame_content = [item.id for item in results.items]
+        self.frame_content = [e.id for e in display_entries]
+
         self.update_thumbs()
 
         # update pagination
