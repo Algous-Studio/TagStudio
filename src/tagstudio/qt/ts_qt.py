@@ -847,7 +847,8 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.preview_panel.update_widgets()
 
     def add_tags_to_selected_callback(self, tag_ids: list[int]):
-        self.lib.add_tags_to_entries(self.selected, tag_ids)
+        entry_ids = self._expand_sequence_ids(self.selected)
+        self.lib.add_tags_to_entries(entry_ids, tag_ids)
 
     def delete_files_callback(self, origin_path: str | Path, origin_id: int | None = None):
         """Callback to send on or more files to the system trash.
@@ -1222,7 +1223,8 @@ class QtDriver(DriverMixin, QObject):
                         exists = True
                 if not exists:
                     self.lib.add_field_to_entry(id, field_id=field.type_key, value=field.value)
-            self.lib.add_tags_to_entries(id, self.copy_buffer["tags"])
+            entry_ids = self._expand_sequence_ids([id])
+            self.lib.add_tags_to_entries(entry_ids, self.copy_buffer["tags"])
         if len(self.selected) > 1:
             if TAG_ARCHIVED in self.copy_buffer["tags"]:
                 self.update_badges({BadgeType.ARCHIVED: True}, origin_id=0, add_tags=False)
@@ -1548,13 +1550,25 @@ class QtDriver(DriverMixin, QObject):
         )
         for badge_type, value in badge_values.items():
             if value:
-                self.lib.add_tags_to_entries(
-                    pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
-                )
+                ids = self._expand_sequence_ids(pending_entries.get(badge_type, []))
+                self.lib.add_tags_to_entries(ids, BADGE_TAGS[badge_type])
             else:
-                self.lib.remove_tags_from_entries(
-                    pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
-                )
+                ids = self._expand_sequence_ids(pending_entries.get(badge_type, []))
+                self.lib.remove_tags_from_entries(ids, BADGE_TAGS[badge_type])
+    
+    def _expand_sequence_ids(self, ids: list[int]) -> list[int]:
+        """Expand sequence poster IDs to include their frame IDs."""
+        if not self.settings.group_sequences:
+            return list(ids)
+        expanded: list[int] = []
+        seen: set[int] = set()
+        seq_reg = self.lib.sequence_registry
+        for entry_id in ids:
+            for eid in seq_reg.ids_for_poster(entry_id):
+                if eid not in seen:
+                    expanded.append(eid)
+                    seen.add(eid)
+        return expanded
 
     def update_browsing_state(self, state: BrowsingState | None = None) -> None:
         """Navigates to a new BrowsingState when state is given, otherwise updates the results."""

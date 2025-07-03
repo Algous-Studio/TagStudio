@@ -59,3 +59,14 @@ class SequenceRegistry:
         for seq in self.sequences:
             for e in seq.entries:
                 self.entry_to_sequence[e.id] = seq
+                
+    def ids_for_poster(self, entry_id: int) -> list[int]:
+        """Return all entry IDs for the sequence represented by ``entry_id``.
+
+        If ``entry_id`` is not recognised as the poster frame of a sequence,
+        it is returned as-is.
+        """
+        seq = self.entry_to_sequence.get(entry_id)
+        if seq and seq.poster and seq.poster.id == entry_id:
+            return [e.id for e in seq.entries]
+        return [entry_id]
