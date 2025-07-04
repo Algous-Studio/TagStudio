@@ -201,3 +201,58 @@ class SQLBoolExpressionBuilder(BaseVisitor[ColumnElement[bool]]):
         Executed on: Entry ⟕ TagEntry (Entry LEFT OUTER JOIN TagEntry).
         """
         return Entry.id.in_(select(Entry.id).outerjoin(TagEntry).where(expr))
+
+
+class OptimizedSQLBoolExpressionBuilder(SQLBoolExpressionBuilder):
+    """
+    Оптимизированная версия SQLBoolExpressionBuilder
+    """
+    def __init__(self, lib: Library):
+        super().__init__(lib)
+        self._tag_cache = {}
+        self._prepared_statements = {}
+
+    def visit_constraint(self, node: Constraint) -> ColumnElement[bool]:
+        """
+        Оптимизированная версия visit_constraint
+        """
+        match node.type:
+            case ConstraintType.Tag:
+                return self._optimized_tag_constraint(node)
+            case ConstraintType.Path:
+                return self._optimized_path_constraint(node)
+            case _:
+                return super().visit_constraint(node)
+
+    def _optimized_tag_constraint(self, node: Constraint) -> ColumnElement[bool]:
+        """
+        Оптимизированное ограничение по тегам
+        """
+        cache_key = f"tag_{node.value}"
+        if cache_key not in self._tag_cache:
+            self._tag_cache[cache_key] = self.__get_tag_ids(node.value)
+        tag_ids = self._tag_cache[cache_key]
+        if not tag_ids:
+            return False
+        if len(tag_ids) == 1:
+            return exists(
+                select(1).select_from(TagEntry)
+                .where(TagEntry.entry_id == Entry.id)
+                .where(TagEntry.tag_id == tag_ids[0])
+            )
+        else:
+            return exists(
+                select(1).select_from(TagEntry)
+                .where(TagEntry.entry_id == Entry.id)
+                .where(TagEntry.tag_id.in_(tag_ids))
+            )
+
+    def _optimized_path_constraint(self, node: Constraint) -> ColumnElement[bool]:
+        """
+        Оптимизированное ограничение по пути
+        """
+        # Для простых паттернов используем индекс
+        if '*' not in node.value and '?' not in node.value:
+            return func.lower(Entry.path).like(f"%{node.value.lower()}%")
+        # Для сложных паттернов используем стандартную логику
+        return super()._handle_path_constraint(node)

@@ -23,6 +23,7 @@ from sqlalchemy import (
     ColumnExpressionArgument,
     Engine,
     NullPool,
+    QueuePool,
     ScalarResult,
     and_,
     asc,
@@ -35,6 +36,7 @@ from sqlalchemy import (
     select,
     text,
     update,
+    event,
 )
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import (
@@ -58,7 +60,7 @@ from tagstudio.core.constants import (
 )
 from tagstudio.core.enums import LibraryPrefs
 from tagstudio.core.library.alchemy import default_color_groups
-from tagstudio.core.library.alchemy.db import make_tables
+from tagstudio.core.library.alchemy.db import make_optimized_tables
 from tagstudio.core.library.alchemy.enums import (
     MAX_SQL_VARIABLES,
     BrowsingState,
@@ -215,6 +217,115 @@ class Library:
     SQL_FILENAME: str = "ts_library.sqlite"
     JSON_FILENAME: str = "ts_library.json"
 
+    def __init__(self):
+        self._search_cache = {}
+        self._cache_max_size = 1000
+        self._cache_ttl = 300
+        # self.default_tags = [
+        # 	Tag(id=0, name='Archived', shorthand='', aliases=['Archive'], subtags_ids=[], color='red'),
+        # 	Tag(id=1, name='Favorite', shorthand='', aliases=['Favorited, Favorites, Likes, Liked, Loved'], subtags_ids=[], color='yellow'),
+        # ]
+
+    def _get_cache_key(self, search: BrowsingState, page_size: int) -> str:
+        """
+        Создание ключа кэша для поискового запроса
+        """
+        cache_data = {
+            'query': search.query,
+            'page_index': search.page_index,
+            'sorting_mode': search.sorting_mode.value,
+            'ascending': search.ascending,
+            'page_size': page_size,
+            'extensions': str(self.prefs(LibraryPrefs.EXTENSION_LIST)),
+            'is_exclude': self.prefs(LibraryPrefs.IS_EXCLUDE_LIST),
+        }
+        cache_str = str(sorted(cache_data.items()))
+        return hashlib.md5(cache_str.encode()).hexdigest()
+
+    def _get_cached_result(self, cache_key: str) -> SearchResult | None:
+        """
+        Получение результата из кэша
+        """
+        if cache_key in self._search_cache:
+            cached_data, timestamp = self._search_cache[cache_key]
+            # Проверка TTL
+            if time.time() - timestamp < self._cache_ttl:
+                logger.info(f"[Search] Cache hit for key: {cache_key[:8]}...")
+                return cached_data
+            else:
+                # Удаление устаревшего кэша
+                del self._search_cache[cache_key]
+        return None
+
+    def _cache_result(self, cache_key: str, result: SearchResult) -> None:
+        """
+        Сохранение результата в кэш
+        """
+        # Очистка кэша если он переполнен
+        if len(self._search_cache) >= self._cache_max_size:
+        # Удаление самых старых записей
+            oldest_keys = sorted(
+                self._search_cache.keys(),
+                key=lambda k: self._search_cache[k][1]
+            )[:self._cache_max_size // 2]
+            for key in oldest_keys:
+                del self._search_cache[key]
+        self._search_cache[cache_key] = (result, time.time())
+        logger.info(f"[Search] Cached result for key: {cache_key[:8]}...")
+
+    def search_library(
+        self,
+        search: BrowsingState,
+        page_size: int,
+    ) -> SearchResult:
+        """
+        Поиск с кэшированием
+        """
+        # Проверка кэша
+        cache_key = self._get_cache_key(search, page_size)
+        cached_result = self._get_cached_result(cache_key)
+        if cached_result:
+            return cached_result
+        result = self.search_library_optimized(search, page_size)
+        # Кэширование результата
+        self._cache_result(cache_key, result)
+        return result
+
+    def clear_search_cache(self) -> None:
+        """
+        Очистка кэша поиска (вызывать при изменении библиотеки)
+        """
+        self._search_cache.clear()
+        logger.info("[Search] Search cache cleared")
+
+    def _set_sqlite_pragma(self, dbapi_connection, connection_record):
+        """
+        Настройка оптимизаций SQLite при каждом подключении
+        КРИТИЧЕСКИ ВАЖНО для производительности с >1M файлов
+        """
+        cursor = dbapi_connection.cursor()
+        # === ОСНОВНЫЕ ОПТИМИЗАЦИИ ===
+        # Write-Ahead Logging - позволяет одновременное чтение/запись
+        cursor.execute("PRAGMA journal_mode = WAL")
+        # Баланс скорости/надежности (FULL слишком медленный)
+        cursor.execute("PRAGMA synchronous = NORMAL")
+        # 1GB кэша вместо 2MB по умолчанию (критично для больших БД)
+        cursor.execute("PRAGMA cache_size = 1000000")
+        # Временные данные в RAM вместо диска
+        cursor.execute("PRAGMA temp_store = MEMORY")
+        # 256MB memory mapping для быстрого доступа
+        cursor.execute("PRAGMA mmap_size = 268435456")
+        # === ДОПОЛНИТЕЛЬНЫЕ ОПТИМИЗАЦИИ ===
+        # Включить внешние ключи для целостности
+        cursor.execute("PRAGMA foreign_keys = ON")
+        # Оптимальный размер страницы для SSD
+        cursor.execute("PRAGMA page_size = 4096")
+        # Постепенная очистка БД
+        cursor.execute("PRAGMA auto_vacuum = INCREMENTAL")
+        # Оптимизация для множественных INSERT
+        cursor.execute("PRAGMA optimize")
+        cursor.close()
+
     def close(self):
         if self.engine:
             self.engine.dispose()
@@ -222,6 +333,32 @@ class Library:
         self.storage_path = None
         self.folder = None
         self.included_files = set()
+
+    def batch_add_entries(self, entries: list[Entry]) -> None:
+        """
+        Оптимизированное добавление множества записей
+        Использует batch операции вместо множественных INSERT
+        """
+        if not entries:
+            return
+        # Разбиваем на чанки для предотвращения переполнения SQL переменных
+        chunk_size = min(1000, MAX_SQL_VARIABLES // 10) # Безопасный размер чанка
+        with Session(self.engine) as session:
+            try:
+                # Временно отключить автокоммит для batch операций
+                session.execute(text("PRAGMA synchronous = OFF"))
+                for i in range(0, len(entries), chunk_size):
+                    chunk = entries[i:i + chunk_size]
+                    session.add_all(chunk)
+                    # Коммит каждого чанка
+                    session.commit()
+                    logger.info(f"[Library] Added {len(chunk)} entries (batch {i//chunk_size + 1})")
+                session.execute(text("PRAGMA synchronous = NORMAL"))
+                session.commit()
+            except Exception as e:
+                logger.error("[Library] Batch add failed", error=e)
+                session.rollback()
+                raise
 
     def migrate_json_to_sqlite(self, json_lib: JsonLibrary):
         """Migrate JSON library data to the SQLite database."""
@@ -363,7 +500,7 @@ class Library:
         # More info can be found on the SQLAlchemy docs:
         # https://docs.sqlalchemy.org/en/20/changelog/migration_07.html
         # Under -> sqlite-the-sqlite-dialect-now-uses-nullpool-for-file-based-databases
-        poolclass = None if self.storage_path == ":memory:" else NullPool
+        poolclass = None if self.storage_path == ":memory:" else QueuePool
         db_version: int = 0
 
         logger.info(
@@ -371,7 +508,22 @@ class Library:
             library_dir=library_dir,
             connection_string=connection_string,
         )
-        self.engine = create_engine(connection_string, poolclass=poolclass)
+        self.engine = create_engine(
+            connection_string,
+            poolclass=poolclass,
+            connect_args={
+                "timeout": 30,
+                "check_same_thread": False,
+                "isolation_level": None,
+            },
+            pool_size=20,
+            max_overflow=0,
+            pool_pre_ping=True,
+            pool_recycle=3600,
+            )
+
+        event.listen(self.engine, "connect", self._set_sqlite_pragma)
+
         with Session(self.engine) as session:
             # dont check db version when creating new library
             if not is_new:
@@ -396,7 +548,7 @@ class Library:
                     )
 
             logger.info(f"[Library] DB_VERSION: {db_version}")
-            make_tables(self.engine)
+            make_optimized_tables(self.engine)
 
             # Add default tag color namespaces.
             if is_new:
@@ -1694,3 +1846,205 @@ class Library:
                 session.expunge(result)
 
         return "" if not result else result.name
+
+    def _search_all_entries(
+        self,
+        session: Session,
+        search: BrowsingState,
+        page_size: int
+    ) -> SearchResult:
+        """
+        Оптимизированный поиск всех записей без фильтров
+        """
+        total_count = session.scalar(select(func.count(Entry.id))) or 0
+        statement = select(Entry)
+        sort_column = self._get_sort_column(search)
+        statement = statement.order_by(
+            asc(sort_column) if search.ascending else desc(sort_column)
+        )
+        # Пагинация
+        statement = statement.limit(page_size).offset(search.page_index * page_size)
+        # Выполнение
+        entries = session.scalars(statement).fetchall()
+        session.expunge_all()
+        return SearchResult(total_count=total_count, items=list(entries))
+
+    def _search_with_fts(
+        self,
+        session: Session,
+        search: BrowsingState,
+        page_size: int
+        ) -> SearchResult:
+        """
+        Поиск с использованием Full-Text Search (FTS5)
+        """
+        # Извлечение поискового запроса
+        query_text = self._extract_search_text(search.query)
+        # FTS запрос
+        fts_statement = text("""
+            SELECT entries.*,
+            COUNT(*) OVER() as total_count,
+            entries_fts.rank
+            FROM entries_fts
+            JOIN entries ON entries.id = entries_fts.rowid
+            WHERE entries_fts MATCH :query
+            ORDER BY entries_fts.rank, entries.id
+            LIMIT :limit OFFSET :offset
+        """)
+
+        result = session.execute(fts_statement, {
+            'query': query_text,
+            'limit': page_size,
+            'offset': search.page_index * page_size
+        }).fetchall()
+
+        if not result:
+            return SearchResult(total_count=0, items=[])
+        
+        total_count = result[0].total_count
+        entries = [Entry(**{k: v for k, v in row._asdict().items()
+                            if k not in ['total_count', 'rank']})
+                    for row in result]
+        return SearchResult(total_count=total_count, items=entries)
+        
+    def _can_use_fts(self, search: BrowsingState) -> bool:
+        """
+        Проверка, можно ли использовать FTS для данного запроса
+        """
+        if not search.query:
+            return False
+
+        # Простой текстовый поиск без специальных операторов
+        if not any(op in search.query for op in [':', 'AND', 'OR', 'NOT']):
+            return True
+
+        # Поиск только по filename или path
+        if search.query.startswith(('filename:', 'path:')):
+            return True
+
+        return False
+
+    def _get_sort_column(self, search: BrowsingState) -> ColumnExpressionArgument:
+        """
+        Получение столбца для сортировки с оптимизацией
+        """
+        match search.sorting_mode:
+            case SortingModeEnum.DATE_ADDED:
+                return Entry.id
+            case SortingModeEnum.FILE_NAME:
+                return func.lower(Entry.filename)
+            case SortingModeEnum.PATH:
+                return func.lower(Entry.path)
+            case _:
+                return Entry.id
+            
+    def search_library_optimized(
+        self,
+        search: BrowsingState,
+        page_size: int,
+    ) -> SearchResult:
+        """
+        ОПТИМИЗИРОВАННАЯ версия search_library для максимальной производительности
+        """
+        assert isinstance(search, BrowsingState)
+        assert self.engine
+
+        with Session(self.engine, expire_on_commit=False) as session:
+            # === БЫСТРЫЙ ПУТЬ ДЛЯ ПРОСТЫХ ЗАПРОСОВ ===
+
+            if not search.query or search.query.strip() == "":
+                return self._search_all_entries(session, search, page_size)
+            
+            # === ОБРАБОТКА FTS ПОИСКА ===
+
+            if self._can_use_fts(search):
+                return self._search_with_fts(session, search, page_size)
+            
+            # === СТАНДАРТНЫЙ ПОИСК С ОПТИМИЗАЦИЯМИ ===
+            statement = select(Entry)
+            
+            if search.ast:
+                statement = statement.where(SQLBoolExpressionBuilder(self).visit(search.ast))
+            statement = self._apply_extension_filter(statement)
+
+            # === ОПТИМИЗИРОВАННЫЙ ПОДСЧЕТ ===
+
+            count_statement = select(
+                func.count().over().label('total_count'),
+                Entry.id
+            ).select_from(statement.alias('filtered_entries'))
+            sort_column = self._get_sort_column(search)
+            count_statement = count_statement.order_by(
+                asc(sort_column) if search.ascending else desc(sort_column)
+            )
+            count_statement = count_statement.limit(page_size).offset(
+                search.page_index * page_size
+            )
+
+            # === ВЫПОЛНЕНИЕ ЗАПРОСА ===
+
+            start_time = time.time()
+            result = session.execute(count_statement).fetchall()
+            end_time = time.time()
+            logger.info(f"[Search] Optimized query executed in {end_time - start_time:.4f}s")
+            if not result:
+                return SearchResult(total_count=0, items=[])
+
+            total_count = result[0].total_count
+            entry_ids = [row.id for row in result]
+            entries = session.scalars(select(Entry).where(Entry.id.in_(entry_ids))).fetchall()
+            entries_dict = {entry.id: entry for entry in entries}
+            sorted_entries = [entries_dict[eid] for eid in entry_ids if eid in entries_dict]
+            session.expunge_all()
+            return SearchResult(
+                total_count=total_count,
+                items=sorted_entries,
+            )
+
+    def benchmark_search_performance(self, test_queries: list[str]) -> dict:
+        """
+        Бенчмаркинг производительности поиска
+        """
+        results = {}
+        for query in test_queries:
+            search_state = BrowsingState.from_search_query(query)
+            self.search_library(search_state, 50)
+            # Измерение времени
+            times = []
+            for _ in range(3):
+                start_time = time.time()
+                result = self.search_library(search_state, 50)
+                end_time = time.time()
+                times.append(end_time - start_time)
+            results[query] = {
+                'avg_time': sum(times) / len(times),
+                'min_time': min(times),
+                'max_time': max(times),
+                'result_count': result.total_count,
+            }
+        return results
+
+    def get_search_statistics(self) -> dict:
+        """
+        Получение статистики поиска
+        """
+        with self.engine.connect() as conn:
+            stats = {}
+            # Статистика индексов
+            index_stats = conn.execute(text("""
+                SELECT name, rootpage,
+                    (SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND tbl_name='entries') as index_count
+                FROM sqlite_master
+                WHERE type='index' AND name LIKE 'idx_%'
+            """)).fetchall()
+            stats['indexes'] = [dict(row._asdict()) for row in index_stats]
+            try:
+                fts_stats = conn.execute(text("""
+                    SELECT COUNT(*) as fts_entries
+                    FROM entries_fts
+                """)).scalar()
+                stats['fts_entries'] = fts_stats
+            except:
+                stats['fts_entries'] = 0# Размер кэша
+            stats['cache_size'] = len(self._search_cache)
+            return stats
