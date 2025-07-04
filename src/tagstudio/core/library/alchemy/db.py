@@ -159,7 +159,7 @@ def create_search_optimized_indexes(engine: Engine) -> None:
         # Индекс для подсчета тегов у записи
         conn.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_tag_entries_count
-            ON tag_entries(entry_id) INCLUDE (tag_id)
+            ON tag_entries(entry_id, tag_id)
         """))
         # === ИНДЕКСЫ ДЛЯ ТЕГОВ ===
         # Быстрый поиск по имени тега (case-insensitive)
