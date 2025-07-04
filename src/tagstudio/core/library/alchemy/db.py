@@ -43,6 +43,7 @@ def make_optimized_tables(engine: Engine) -> None:
     Специально настроено для производительности TagStudio
     """
     logger.info("[Library] Creating optimized DB tables...")
+    create_search_optimized_indexes(engine)
     # Создание основных таблиц
     Base.metadata.create_all(engine)
     with engine.connect() as conn:
