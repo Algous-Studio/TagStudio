@@ -215,7 +215,7 @@ class Library:
     included_files: set[Path] = set()
 
     SQL_FILENAME: str = "ts_library.pg"
-    POSTGRES_URL: str = "postgresql+psycopg2://postgres:postgres@localhost/tagstudio"
+    POSTGRES_URL: str = "postgresql+psycopg2://postgres:acescg@localhost/tagstudio_db"
     JSON_FILENAME: str = "ts_library.json"
 
     _sequence_registry: "SequenceRegistry | None" = None
