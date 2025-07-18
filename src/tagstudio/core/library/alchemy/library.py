@@ -44,6 +44,7 @@ from sqlalchemy.orm import (
     make_transient,
     selectinload,
 )
+from sqlalchemy.engine import URL
 
 from tagstudio.core.constants import (
     BACKUP_FOLDER_NAME,
@@ -339,22 +340,26 @@ class Library:
             return self.open_sqlite_library(library_dir, is_new)
         else:
             self.storage_path = library_dir / TS_FOLDER_NAME / self.SQL_FILENAME
-            if self.verify_ts_folder(library_dir) and (is_new := not self.storage_path.exists()):
-                json_path = library_dir / TS_FOLDER_NAME / self.JSON_FILENAME
-                if json_path.exists():
-                    return LibraryStatus(
-                        success=False,
-                        library_path=library_dir,
-                        message="[JSON] Legacy v9.4 library requires conversion to v9.5+",
-                        json_migration_req=True,
-                    )
+            is_new = True
+            json_path = library_dir / TS_FOLDER_NAME / self.JSON_FILENAME
+            if json_path.exists():
+                return LibraryStatus(
+                    success=False,
+                    library_path=library_dir,
+                    message="[JSON] Legacy v9.4 library requires conversion to v9.5+",
+                    json_migration_req=True,
+                )
 
         return self.open_sqlite_library(library_dir, is_new)
 
     def open_sqlite_library(self, library_dir: Path, is_new: bool) -> LibraryStatus:
         connection_string = URL.create(
-            drivername="sqlite",
-            database=str(self.storage_path),
+            drivername="postgresql+psycopg2",
+            username="postgres",
+            password="acescg",
+            host="localhost",
+            port=5432,
+            database="tagstudio_db",
         )
         # NOTE: File-based databases should use NullPool to create new DB connection in order to
         # keep connections on separate threads, which prevents the DB files from being locked

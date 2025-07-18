@@ -46,24 +46,24 @@ def make_tables(engine: Engine) -> None:
     # create tag and delete it to bump the autoincrement sequence
     # TODO - find a better way
     # is this the better way?
-    with engine.connect() as conn:
-        result = conn.execute(text("SELECT SEQ FROM sqlite_sequence WHERE name='tags'"))
-        autoincrement_val = result.scalar()
-        if not autoincrement_val or autoincrement_val <= RESERVED_TAG_END:
-            try:
-                conn.execute(
-                    text(
-                        "INSERT INTO tags "
-                        "(id, name, color_namespace, color_slug, is_category) VALUES "
-                        f"({RESERVED_TAG_END}, 'temp', NULL, NULL, false)"
-                    )
-                )
-                conn.execute(text(f"DELETE FROM tags WHERE id = {RESERVED_TAG_END}"))
-                conn.commit()
-            except OperationalError as e:
-                logger.error("Could not initialize built-in tags", error=e)
-                conn.rollback()
-
+    # with engine.connect() as conn:
+    #     # result = conn.execute(text("SELECT SEQ FROM sqlite_sequence WHERE name='tags'"))
+    #     autoincrement_val = result.scalar()
+    #     if not autoincrement_val or autoincrement_val <= RESERVED_TAG_END:
+    #         try:
+    #             conn.execute(
+    #                 text(
+    #                     "INSERT INTO tags "
+    #                     "(id, name, color_namespace, color_slug, is_category) VALUES "
+    #                     f"({RESERVED_TAG_END}, 'temp', NULL, NULL, false)"
+    #                 )
+    #             )
+    #             conn.execute(text(f"DELETE FROM tags WHERE id = {RESERVED_TAG_END}"))
+    #             conn.commit()
+    #         except OperationalError as e:
+    #             logger.error("Could not initialize built-in tags", error=e)
+    #             conn.rollback()
+    pass
 
 def drop_tables(engine: Engine) -> None:
     logger.info("dropping db tables")
