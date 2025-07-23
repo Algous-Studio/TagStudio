@@ -63,6 +63,19 @@ def make_tables(engine: Engine) -> None:
             except OperationalError as e:
                 logger.error("Could not initialize built-in tags", error=e)
                 conn.rollback()
+        
+        # Add sequence optimization index
+        try:
+            conn.execute(text("""
+                CREATE INDEX IF NOT EXISTS idx_entries_sequence_pattern 
+                ON entries(path) 
+                WHERE path GLOB '*[._-][0-9][0-9][0-9]*'
+            """))
+            conn.commit()
+            logger.info("[Library] Created sequence optimization index")
+        except OperationalError as e:
+            logger.error("Could not create sequence optimization index", error=e)
+            conn.rollback()
 
 
 def drop_tables(engine: Engine) -> None:

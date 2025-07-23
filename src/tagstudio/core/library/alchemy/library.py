@@ -226,9 +226,9 @@ class Library:
             self._sequence_registry = SequenceRegistry(library=self)
         return self._sequence_registry
 
-    def refresh_sequences(self) -> Iterator[int]:
-        """Update internal sequence registry."""
-        return self.sequence_registry.refresh_sequences()
+    def get_entry(self, entry_id: int) -> Entry | None:
+        """Get entry by ID - used by sequence registry."""
+        return self.session.get(Entry, entry_id)
     
     def close(self):
         if self.engine:

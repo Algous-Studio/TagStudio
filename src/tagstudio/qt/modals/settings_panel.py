@@ -151,6 +151,12 @@ class SettingsPanel(PanelWidget):
         self.group_sequences_checkbox = QCheckBox()
         self.group_sequences_checkbox.setChecked(self.driver.settings.group_sequences)
         form_layout.addRow(Translations["settings.group_sequences"], self.group_sequences_checkbox)
+        
+        # Sequence Cache Size
+        self.sequence_cache_line_edit = QLineEdit()
+        self.sequence_cache_line_edit.setText(str(self.driver.settings.sequence_cache_size))
+        form_layout.addRow("Sequence Cache Size", self.sequence_cache_line_edit)
+        
         # Page Size
         self.page_size_line_edit = QLineEdit()
         self.page_size_line_edit.setText(str(self.driver.settings.page_size))
@@ -239,6 +245,7 @@ class SettingsPanel(PanelWidget):
             "autoplay": self.autoplay_checkbox.isChecked(),
             "show_filenames_in_grid": self.show_filenames_checkbox.isChecked(),
             "group_sequences": self.group_sequences_checkbox.isChecked(),
+            "sequence_cache_size": int(self.sequence_cache_line_edit.text()),
             "page_size": int(self.page_size_line_edit.text()),
             "show_filepath": self.filepath_combobox.currentData(),
             "theme": self.theme_combobox.currentData(),
@@ -256,6 +263,7 @@ class SettingsPanel(PanelWidget):
         driver.settings.autoplay = settings["autoplay"]
         driver.settings.show_filenames_in_grid = settings["show_filenames_in_grid"]
         driver.settings.group_sequences = settings["group_sequences"]
+        driver.settings.sequence_cache_size = settings["sequence_cache_size"]
         driver.settings.page_size = settings["page_size"]
         driver.settings.show_filepath = settings["show_filepath"]
         driver.settings.theme = settings["theme"]
@@ -265,6 +273,10 @@ class SettingsPanel(PanelWidget):
         driver.settings.zero_padding = settings["zero_padding"]
 
         driver.settings.save()
+        
+        # Clear sequence cache when settings change
+        if hasattr(driver.lib, '_sequence_registry') and driver.lib._sequence_registry:
+            driver.lib.sequence_registry.clear_cache()
 
         # Apply changes
         # Show File Path
