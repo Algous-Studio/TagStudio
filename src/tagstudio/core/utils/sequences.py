@@ -20,6 +20,7 @@ class SequenceRegistry:
     _sequence_cache: dict[int, list[int]] = field(default_factory=dict)
     _cache_max_size: int = field(default=10000)
     _cache_access_order: list[int] = field(default_factory=list)
+    _progressive_cache: dict[int, tuple[list["Entry"], list[int | None]]] = field(default_factory=dict)
     
     def get_complete_sequence(self, entry: "Entry") -> list["Entry"]:
         """Get sequence siblings via cached SQL query."""
@@ -59,20 +60,25 @@ class SequenceRegistry:
     
     def get_sequence_aware_page(self, page_num: int, page_size: int, 
                               browsing_state: "BrowsingState | None" = None) -> tuple[list["Entry"], list[int | None], int]:
-        """Get page with proper sequence grouping and return total display count."""
-        # Get grouped display items (this processes all entries for accurate count)
-        all_display_items, all_frame_counts = self._get_all_grouped_items(browsing_state)
+        """Get page with proper sequence grouping using smart streaming approach."""
+        display_items: list["Entry"] = []
+        frame_counts: list[int | None] = []
+        processed_ids: set[int] = set()
         
-        # Calculate pagination
-        total_display_count = len(all_display_items)
-        start_idx = page_num * page_size
-        end_idx = start_idx + page_size
-        
-        # Return the requested page
-        page_items = all_display_items[start_idx:end_idx]
-        page_counts = all_frame_counts[start_idx:end_idx]
-        
-        return page_items, page_counts, total_display_count
+        # For pagination, we need to estimate total count efficiently
+        if browsing_state and (getattr(browsing_state, 'query', None) or getattr(browsing_state, 'ast', None)):
+            # For filtered results, get all (usually small result set)
+            all_results = self.library.search_library(browsing_state, 999999)
+            candidate_entries = all_results.items
+            # Process all for accurate count since result set is filtered and smaller
+            all_items, all_counts = self._process_entries_for_sequences(candidate_entries)
+            total_count = len(all_items)
+            start_idx = page_num * page_size
+            end_idx = start_idx + page_size
+            return all_items[start_idx:end_idx], all_counts[start_idx:end_idx], total_count
+        else:
+            # For unfiltered results, use streaming approach for large libraries
+            return self._get_page_streaming(page_num, page_size)
     
     def _get_all_grouped_items(self, browsing_state: "BrowsingState | None" = None) -> tuple[list["Entry"], list[int | None]]:
         """Get all items with sequence grouping applied."""
@@ -121,6 +127,197 @@ class SequenceRegistry:
             self._grouped_cache.clear()
         
         self._grouped_cache[cache_key] = (display_items, frame_counts)
+        return display_items, frame_counts
+    
+    def _get_page_streaming(self, page_num: int, page_size: int) -> tuple[list["Entry"], list[int | None], int]:
+        """High-performance streaming approach for large unfiltered libraries."""
+        display_items: list["Entry"] = []
+        frame_counts: list[int | None] = []
+        processed_ids: set[int] = set()
+        
+        # Estimate how many entries we need to process to get a full page
+        # Assume average 20% are sequences, so we need ~1.25x entries to get page_size items
+        estimated_multiplier = 1.5
+        batch_size = max(page_size * 2, 200)  # Minimum reasonable batch
+        
+        offset = 0
+        target_items = page_size
+        skipped_due_to_sequences = 0
+        
+        while len(display_items) < target_items:
+            # Get a batch of entries
+            batch = self._get_entries_batch(offset, batch_size)
+            if not batch:
+                break
+                
+            batch_start_count = len(display_items)
+            
+            for entry in batch:
+                if entry.id in processed_ids:
+                    continue
+                    
+                # Quick check: does this look like a sequence?
+                if SEQUENCE_RE.match(entry.path.stem):
+                    # It's a potential sequence - get the full sequence
+                    sequence_entries = self.get_complete_sequence(entry)
+                    if len(sequence_entries) > 1:
+                        # It's a sequence - use the poster
+                        poster = min(sequence_entries, key=lambda e: e.path)
+                        if poster.id not in processed_ids:
+                            display_items.append(poster)
+                            frame_counts.append(len(sequence_entries))
+                            processed_ids.update(e.id for e in sequence_entries)
+                        continue
+                
+                # It's a single file
+                if entry.id not in processed_ids:
+                    display_items.append(entry)
+                    frame_counts.append(None)
+                    processed_ids.add(entry.id)
+                
+                if len(display_items) >= target_items:
+                    break
+            
+            # If we didn't make progress, increase batch size or break
+            if len(display_items) == batch_start_count:
+                if batch_size < 1000:
+                    batch_size *= 2
+                else:
+                    break
+            
+            offset += len(batch)
+            
+            # Safety valve for very large libraries
+            if offset > 50000:  # Processed 50k entries, estimate total
+                break
+        
+        # Estimate total count based on what we've seen
+        if offset > 0:
+            ratio = len(display_items) / offset  # display items per raw entry
+            total_entries = self.library.entries_count
+            estimated_total = int(total_entries * ratio)
+        else:
+            estimated_total = len(display_items)
+        
+        # Cache this result for future use
+        self._progressive_cache[0] = (display_items[:page_size], frame_counts[:page_size])
+        
+        # Apply pagination offset
+        start_idx = page_num * page_size
+        if page_num > 0:
+            # For subsequent pages, try to use progressive approach
+            return self._get_page_progressive(page_num, page_size, estimated_total)
+        
+        return display_items[:page_size], frame_counts[:page_size], estimated_total
+    
+    def _get_exact_page(self, page_num: int, page_size: int) -> tuple[list["Entry"], list[int | None], int]:
+        """Get exact page for page_num > 0 using smart streaming."""
+        display_items: list["Entry"] = []
+        frame_counts: list[int | None] = []
+        processed_ids: set[int] = set()
+        
+        # Calculate how many display items we need to skip
+        target_skip = page_num * page_size
+        target_items = page_size
+        
+        # Stream through entries until we reach the target page
+        offset = 0
+        batch_size = 500
+        items_found = 0
+        
+        while items_found < target_skip + target_items:
+            batch = self._get_entries_batch(offset, batch_size)
+            if not batch:
+                break
+                
+            for entry in batch:
+                if entry.id in processed_ids:
+                    continue
+                
+                # Process this entry (sequence or single)
+                if SEQUENCE_RE.match(entry.path.stem):
+                    sequence_entries = self.get_complete_sequence(entry)
+                    if len(sequence_entries) > 1:
+                        poster = min(sequence_entries, key=lambda e: e.path)
+                        if poster.id not in processed_ids:
+                            if items_found >= target_skip:
+                                display_items.append(poster)
+                                frame_counts.append(len(sequence_entries))
+                            items_found += 1
+                            processed_ids.update(e.id for e in sequence_entries)
+                        continue
+                
+                # Single file
+                if entry.id not in processed_ids:
+                    if items_found >= target_skip:
+                        display_items.append(entry)
+                        frame_counts.append(None)
+                    items_found += 1
+                    processed_ids.add(entry.id)
+                
+                if len(display_items) >= target_items:
+                    break
+            
+            offset += len(batch)
+            
+            # Safety valve
+            if offset > 100000:
+                break
+        
+        # Estimate total based on what we've processed
+        if offset > 0:
+            ratio = items_found / offset
+            estimated_total = int(self.library.entries_count * ratio)
+        else:
+            estimated_total = items_found
+        
+        return display_items[:target_items], frame_counts[:target_items], estimated_total
+    
+    def _get_page_progressive(self, page_num: int, page_size: int, estimated_total: int) -> tuple[list["Entry"], list[int | None], int]:
+        """Get page using progressive caching for better performance."""
+        # Check if we have this page cached
+        if page_num in self._progressive_cache:
+            cached_items, cached_counts = self._progressive_cache[page_num]
+            return cached_items, cached_counts, estimated_total
+        
+        # Find the highest cached page before this one
+        max_cached_page = -1
+        for cached_page in self._progressive_cache.keys():
+            if cached_page < page_num:
+                max_cached_page = max(max_cached_page, cached_page)
+        
+        if max_cached_page >= 0:
+            # Start from the last cached page
+            start_items_to_skip = (max_cached_page + 1) * page_size
+        else:
+            # No cache, start from beginning
+            start_items_to_skip = 0
+        
+        # Use the exact page method but with optimized starting point
+        return self._get_exact_page(page_num, page_size)
+    
+    def _process_entries_for_sequences(self, entries: list["Entry"]) -> tuple[list["Entry"], list[int | None]]:
+        """Process a list of entries and group sequences."""
+        display_items: list["Entry"] = []
+        frame_counts: list[int | None] = []
+        processed_ids: set[int] = set()
+        
+        for entry in entries:
+            if entry.id in processed_ids:
+                continue
+                
+            sequence_entries = self.get_complete_sequence(entry)
+            
+            if len(sequence_entries) > 1:
+                poster = min(sequence_entries, key=lambda e: e.path)
+                display_items.append(poster)
+                frame_counts.append(len(sequence_entries))
+                processed_ids.update(e.id for e in sequence_entries)
+            else:
+                display_items.append(entry)
+                frame_counts.append(None)
+                processed_ids.add(entry.id)
+        
         return display_items, frame_counts
     
     def ids_for_poster(self, entry_id: int) -> list[int]:
@@ -225,5 +422,6 @@ class SequenceRegistry:
         """Clear all cached sequences."""
         self._sequence_cache.clear()
         self._cache_access_order.clear()
+        self._progressive_cache.clear()
         if hasattr(self, '_grouped_cache'):
             self._grouped_cache.clear()
