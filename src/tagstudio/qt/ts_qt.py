@@ -1608,9 +1608,9 @@ class QtDriver(DriverMixin, QObject):
                 self.settings.page_size,
                 self.browsing_history.current
             )
-            # Update the results object with correct count for pagination
-            results.items = display_entries
-            results.total_count = sequence_total_count
+            # Create a new results object with correct count for pagination
+            from dataclasses import replace
+            results = replace(results, items=display_entries, total_count=sequence_total_count)
         else:
             display_entries = results.items
             self.frame_counts = [None] * len(display_entries)
