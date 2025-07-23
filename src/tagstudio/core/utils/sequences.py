@@ -58,25 +58,45 @@ class SequenceRegistry:
             return [entry]
     
     def get_sequence_aware_page(self, page_num: int, page_size: int, 
-                              browsing_state: "BrowsingState | None" = None) -> tuple[list["Entry"], list[int | None]]:
-        """Get page with proper sequence grouping and search/filter support."""
+                              browsing_state: "BrowsingState | None" = None) -> tuple[list["Entry"], list[int | None], int]:
+        """Get page with proper sequence grouping and return total display count."""
+        # Get grouped display items (this processes all entries for accurate count)
+        all_display_items, all_frame_counts = self._get_all_grouped_items(browsing_state)
+        
+        # Calculate pagination
+        total_display_count = len(all_display_items)
+        start_idx = page_num * page_size
+        end_idx = start_idx + page_size
+        
+        # Return the requested page
+        page_items = all_display_items[start_idx:end_idx]
+        page_counts = all_frame_counts[start_idx:end_idx]
+        
+        return page_items, page_counts, total_display_count
+    
+    def _get_all_grouped_items(self, browsing_state: "BrowsingState | None" = None) -> tuple[list["Entry"], list[int | None]]:
+        """Get all items with sequence grouping applied."""
+        # Check if we have this cached
+        cache_key = str(browsing_state) if browsing_state else "all"
+        if hasattr(self, '_grouped_cache') and cache_key in self._grouped_cache:
+            return self._grouped_cache[cache_key]
+        
         display_items: list["Entry"] = []
         frame_counts: list[int | None] = []
         processed_ids: set[int] = set()
         
-        # Use existing search/filter if provided
+        # Get all entries that match the search/filter
         if browsing_state and (getattr(browsing_state, 'query', None) or getattr(browsing_state, 'ast', None)):
-            # Get filtered results first, then apply sequence grouping
-            results = self.library.search_library(browsing_state, page_size * 3)
-            candidate_entries = results.items
+            # Get all filtered results (not just a page)
+            all_results = self.library.search_library(browsing_state, 999999)  # Large number to get all
+            candidate_entries = all_results.items
         else:
-            # Get all entries for sequence processing
-            db_offset = page_num * page_size
-            candidate_entries = self._get_entries_batch(db_offset, page_size * 2)
+            # Get all entries
+            candidate_entries = self._get_all_entries()
         
-        # Apply sequence grouping to candidates
+        # Apply sequence grouping to all entries
         for entry in candidate_entries:
-            if entry.id in processed_ids or len(display_items) >= page_size:
+            if entry.id in processed_ids:
                 continue
                 
             sequence_entries = self.get_complete_sequence(entry)
@@ -92,7 +112,16 @@ class SequenceRegistry:
                 frame_counts.append(None)
                 processed_ids.add(entry.id)
         
-        return display_items[:page_size], frame_counts[:page_size]
+        # Cache the result (with size limit)
+        if not hasattr(self, '_grouped_cache'):
+            self._grouped_cache = {}
+        
+        # Keep cache size reasonable
+        if len(self._grouped_cache) > 5:
+            self._grouped_cache.clear()
+        
+        self._grouped_cache[cache_key] = (display_items, frame_counts)
+        return display_items, frame_counts
     
     def ids_for_poster(self, entry_id: int) -> list[int]:
         """Return all entry IDs for the sequence represented by entry_id."""
@@ -159,6 +188,23 @@ class SequenceRegistry:
             # Return empty list on database error
             return []
     
+    def _get_all_entries(self) -> list["Entry"]:
+        """Get all entries from the library."""
+        try:
+            from sqlalchemy.orm import Session, selectinload
+            from tagstudio.core.library.alchemy.models import Entry as EntryModel
+            
+            with Session(self.library.engine) as session:
+                return (
+                    session.query(EntryModel)
+                    .options(selectinload(EntryModel.tags))
+                    .order_by(EntryModel.id)
+                    .all()
+                )
+        except Exception:
+            # Return empty list on database error
+            return []
+    
     def _add_to_cache(self, entry_ids: list[int]) -> None:
         """Add entries to cache with LRU eviction."""
         # Evict old entries if cache is full
@@ -179,3 +225,5 @@ class SequenceRegistry:
         """Clear all cached sequences."""
         self._sequence_cache.clear()
         self._cache_access_order.clear()
+        if hasattr(self, '_grouped_cache'):
+            self._grouped_cache.clear()

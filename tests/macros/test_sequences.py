@@ -52,10 +52,11 @@ def test_sequence_aware_pagination(tmp_path):
     lib.add_entries(entries)
     
     registry = lib.sequence_registry
-    display_items, frame_counts = registry.get_sequence_aware_page(0, 10)
+    display_items, frame_counts, total_count = registry.get_sequence_aware_page(0, 10)
     
     # Should show: seqA poster, single file, seqB poster = 3 items
     assert len(display_items) == 3
+    assert total_count == 3  # Total display count after grouping
     assert frame_counts[0] == 3  # seqA
     assert frame_counts[1] is None  # single file
     assert frame_counts[2] == 2  # seqB

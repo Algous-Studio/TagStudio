@@ -284,6 +284,9 @@ class SettingsPanel(PanelWidget):
         # Clear sequence cache when settings change
         if hasattr(driver.lib, '_sequence_registry') and driver.lib._sequence_registry:
             driver.lib.sequence_registry.clear_cache()
+        
+        # Force update of browsing state to reflect changes
+        driver.update_browsing_state()
 
         # Apply changes
         # Show File Path
