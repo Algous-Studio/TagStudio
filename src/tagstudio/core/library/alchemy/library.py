@@ -228,7 +228,8 @@ class Library:
 
     def get_entry(self, entry_id: int) -> Entry | None:
         """Get entry by ID - used by sequence registry."""
-        return self.session.get(Entry, entry_id)
+        with Session(self.engine) as session:
+            return session.get(Entry, entry_id)
     
     def close(self):
         if self.engine:

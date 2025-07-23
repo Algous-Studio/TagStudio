@@ -1604,9 +1604,9 @@ class QtDriver(DriverMixin, QObject):
         # Use sequence-aware pagination
         if self.settings.group_sequences:
             display_entries, self.frame_counts = self.lib.sequence_registry.get_sequence_aware_page(
-                self.state.page_index,
+                self.browsing_history.current.page_index,
                 self.settings.page_size,
-                self.state
+                self.browsing_history.current
             )
         else:
             display_entries = results.items

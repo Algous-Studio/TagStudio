@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from tagstudio.core.library.alchemy.library import Library
     from tagstudio.core.library.alchemy.models import Entry
+    from tagstudio.core.library.alchemy.enums import BrowsingState
 
 SEQUENCE_RE = re.compile(r"^(.*?)[._-](\d{3,6})$")
 
@@ -22,28 +23,39 @@ class SequenceRegistry:
     
     def get_complete_sequence(self, entry: "Entry") -> list["Entry"]:
         """Get sequence siblings via cached SQL query."""
-        if entry.id in self._sequence_cache:
-            # Move to end for LRU tracking
-            if entry.id in self._cache_access_order:
-                self._cache_access_order.remove(entry.id)
-            self._cache_access_order.append(entry.id)
+        try:
+            if entry.id in self._sequence_cache:
+                # Move to end for LRU tracking
+                if entry.id in self._cache_access_order:
+                    self._cache_access_order.remove(entry.id)
+                self._cache_access_order.append(entry.id)
+                
+                # Filter out None entries in case of database issues
+                cached_entries = [self.library.get_entry(eid) for eid in self._sequence_cache[entry.id]]
+                return [e for e in cached_entries if e is not None]
             
-            return [self.library.get_entry(eid) for eid in self._sequence_cache[entry.id]]
-        
-        match = SEQUENCE_RE.match(entry.path.stem)
-        if not match:
-            self._add_to_cache([entry.id])
+            match = SEQUENCE_RE.match(entry.path.stem)
+            if not match:
+                self._add_to_cache([entry.id])
+                return [entry]
+            
+            # SQL query only for this specific sequence
+            base_name = match.group(1)
+            sequence_entries = self._query_sequence_siblings(entry, base_name)
+            
+            if not sequence_entries:
+                # Fall back to single entry if query fails
+                self._add_to_cache([entry.id])
+                return [entry]
+            
+            # Cache all entries in this sequence
+            entry_ids = [e.id for e in sequence_entries]
+            self._add_to_cache(entry_ids)
+                
+            return sequence_entries
+        except Exception:
+            # Fall back to single entry on any error
             return [entry]
-        
-        # SQL query only for this specific sequence
-        base_name = match.group(1)
-        sequence_entries = self._query_sequence_siblings(entry, base_name)
-        
-        # Cache all entries in this sequence
-        entry_ids = [e.id for e in sequence_entries]
-        self._add_to_cache(entry_ids)
-            
-        return sequence_entries
     
     def get_sequence_aware_page(self, page_num: int, page_size: int, 
                               browsing_state: "BrowsingState | None" = None) -> tuple[list["Entry"], list[int | None]]:
@@ -53,9 +65,9 @@ class SequenceRegistry:
         processed_ids: set[int] = set()
         
         # Use existing search/filter if provided
-        if browsing_state and (getattr(browsing_state, 'query', None) or getattr(browsing_state, 'tag_ids', None)):
+        if browsing_state and (getattr(browsing_state, 'query', None) or getattr(browsing_state, 'ast', None)):
             # Get filtered results first, then apply sequence grouping
-            results = self.library.get_browsing_results(browsing_state, page_size=page_size * 3)
+            results = self.library.search_library(browsing_state, page_size * 3)
             candidate_entries = results.items
         else:
             # Get all entries for sequence processing
@@ -103,38 +115,49 @@ class SequenceRegistry:
     
     def _query_sequence_siblings(self, entry: "Entry", base_name: str) -> list["Entry"]:
         """Optimized SQL query for specific sequence siblings."""
-        from tagstudio.core.library.alchemy.models import Entry as EntryModel
-        
-        # Use GLOB pattern for efficient matching
-        parent_path = str(entry.path.parent)
-        if parent_path == ".":
-            parent_path = ""
-        
-        pattern = f"{parent_path}/{base_name}[._-][0-9][0-9][0-9]*" if parent_path else f"{base_name}[._-][0-9][0-9][0-9]*"
-        
-        # Query using the library's Entry model directly
-        entries = (
-            self.library.session.query(EntryModel)
-            .filter(EntryModel.path.op('GLOB')(pattern))
-            .order_by(EntryModel.path)
-            .all()
-        )
-        
-        return entries
+        try:
+            from sqlalchemy.orm import Session
+            from tagstudio.core.library.alchemy.models import Entry as EntryModel
+            
+            # Use GLOB pattern for efficient matching
+            parent_path = str(entry.path.parent)
+            if parent_path == ".":
+                parent_path = ""
+            
+            pattern = f"{parent_path}/{base_name}[._-][0-9][0-9][0-9]*" if parent_path else f"{base_name}[._-][0-9][0-9][0-9]*"
+            
+            # Query using the library's Entry model directly
+            with Session(self.library.engine) as session:
+                entries = (
+                    session.query(EntryModel)
+                    .filter(EntryModel.path.op('GLOB')(pattern))
+                    .order_by(EntryModel.path)
+                    .all()
+                )
+            
+            return entries
+        except Exception:
+            # Return empty list on database error
+            return []
     
     def _get_entries_batch(self, offset: int, limit: int) -> list["Entry"]:
         """Get entries batch with optimized query."""
-        from sqlalchemy.orm import selectinload
-        from tagstudio.core.library.alchemy.models import Entry as EntryModel
-        
-        return (
-            self.library.session.query(EntryModel)
-            .options(selectinload(EntryModel.tags))
-            .order_by(EntryModel.id)
-            .offset(offset)
-            .limit(limit)
-            .all()
-        )
+        try:
+            from sqlalchemy.orm import Session, selectinload
+            from tagstudio.core.library.alchemy.models import Entry as EntryModel
+            
+            with Session(self.library.engine) as session:
+                return (
+                    session.query(EntryModel)
+                    .options(selectinload(EntryModel.tags))
+                    .order_by(EntryModel.id)
+                    .offset(offset)
+                    .limit(limit)
+                    .all()
+                )
+        except Exception:
+            # Return empty list on database error
+            return []
     
     def _add_to_cache(self, entry_ids: list[int]) -> None:
         """Add entries to cache with LRU eviction."""

@@ -155,6 +155,13 @@ class SettingsPanel(PanelWidget):
         # Sequence Cache Size
         self.sequence_cache_line_edit = QLineEdit()
         self.sequence_cache_line_edit.setText(str(self.driver.settings.sequence_cache_size))
+        
+        def on_sequence_cache_changed():
+            text = self.sequence_cache_line_edit.text()
+            if not text.isdigit() or int(text) < 1:
+                self.sequence_cache_line_edit.setText(str(self.driver.settings.sequence_cache_size))
+        
+        self.sequence_cache_line_edit.textChanged.connect(on_sequence_cache_changed)
         form_layout.addRow("Sequence Cache Size", self.sequence_cache_line_edit)
         
         # Page Size
