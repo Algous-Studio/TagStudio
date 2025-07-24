@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 from warnings import catch_warnings
+import OpenImageIO as oiio
 
 import cv2
 import rawpy
@@ -268,19 +269,29 @@ class PreviewThumb(QWidget):
             ):
                 pass
         elif MediaCategories.is_ext_in_category(
-            ext, MediaCategories.IMAGE_RASTER_TYPES, mime_fallback=True
-        ):
-            try:
-                image = Image.open(str(filepath))
-                stats["width"] = image.width
-                stats["height"] = image.height
-            except (
-                DecompressionBombError,
-                FileNotFoundError,
-                NotImplementedError,
-                UnidentifiedImageError,
-            ) as e:
-                logger.error("[PreviewThumb] Could not get image stats", filepath=filepath, error=e)
+                ext, MediaCategories.IMAGE_RASTER_TYPES, mime_fallback=True
+            ):
+                try:
+                    if ext == ".exr":
+                        input = oiio.ImageInput.open(str(filepath)) 
+                        if input:
+                            spec = input.spec()
+                            stats["width"] = spec.width
+                            stats["height"] = spec.height  
+                            input.close()
+                    else:  
+                        image = Image.open(str(filepath))
+                        stats["width"] = image.width
+                        stats["height"] = image.height
+                except (
+                    DecompressionBombError,  
+                    FileNotFoundError,
+                    NotImplementedError,
+                    UnidentifiedImageError,
+                    oiio.OpenImageIOError
+                ) as e:
+                    logger.error("[PreviewThumb] Could not get image stats", filepath=filepath, error=e)
+
         elif MediaCategories.is_ext_in_category(
             ext, MediaCategories.IMAGE_VECTOR_TYPES, mime_fallback=True
         ):

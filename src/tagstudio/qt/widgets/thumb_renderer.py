@@ -13,6 +13,7 @@ from io import BytesIO
 from pathlib import Path
 from typing import cast
 from warnings import catch_warnings
+import OpenImageIO as oiio
 
 import cv2
 import numpy as np
@@ -1318,18 +1319,7 @@ class ThumbRenderer(QObject):
         is_grid_thumb: bool = False,
         save_to_file: Path | None = None,
     ) -> Image.Image | None:
-        """Render a thumbnail or preview image.
-
-        Args:
-            timestamp (float): The timestamp for which this this job was dispatched.
-            filepath (str | Path): The path of the file to render a thumbnail for.
-            base_size (tuple[int,int]): The unmodified base size of the thumbnail.
-            pixel_ratio (float): The screen pixel ratio.
-            is_grid_thumb (bool): Is this a thumbnail for the thumbnail grid?
-                Or else the Preview Pane?
-            save_to_file(Path | None): A filepath to optionally save the output to.
-
-        """
+        """Render a thumbnail or preview image."""
         adj_size = math.ceil(max(base_size[0], base_size[1]) * pixel_ratio)
         image: Image.Image | None = None
         _filepath: Path = Path(filepath)
@@ -1341,16 +1331,38 @@ class ThumbRenderer(QObject):
                 if not _filepath.exists():
                     raise FileNotFoundError
                 ext: str = _filepath.suffix.lower() if _filepath.suffix else _filepath.stem.lower()
+                
                 # Images =======================================================
                 if MediaCategories.is_ext_in_category(
                     ext, MediaCategories.IMAGE_TYPES, mime_fallback=True
                 ):
+                    if ext == ".exr":
+                        input = oiio.ImageInput.open(str(_filepath))
+                        if not input:
+                            raise oiio.OpenImageIOError(f"Can't open {_filepath}")
+                        spec = input.spec()
+                        width = spec.width
+                        height = spec.height
+                        channels = spec.nchannels
+                        src_buf = oiio.ImageBuf(spec)
+                        input.read_image(0, -1)
+                        src_buf.set_pixels(oiio.ROI(), input.read_image())
+                        input.close()
+
+                        # Convert to 8-bit sRGB for thumbnail
+                        dst_buf = oiio.ImageBufAlgo.colorconvert(src_buf, "sRGB", "linear")
+                        
+                        # Get the pixels as a numpy array
+                        pixels = dst_buf.get_pixels(oiio.UINT8, dstchannels=4)
+
+                        image = Image.fromarray(pixels, mode="RGBA")
+
                     # Raw Images -----------------------------------------------
-                    if MediaCategories.is_ext_in_category(
+                    elif MediaCategories.is_ext_in_category(
                         ext, MediaCategories.IMAGE_RAW_TYPES, mime_fallback=True
                     ):
                         image = self._image_raw_thumb(_filepath)
-                    # Vector Images --------------------------------------------
+                    # Vector Images --------------------------------------------  
                     elif MediaCategories.is_ext_in_category(
                         ext, MediaCategories.IMAGE_VECTOR_TYPES, mime_fallback=True
                     ):
@@ -1387,7 +1399,7 @@ class ThumbRenderer(QObject):
                         # Short (Aa) Preview
                         image = self._font_short_thumb(_filepath, adj_size)
                     else:
-                        # Large (Full Alphabet) Preview
+                        # Large (Full Alphabet) Preview 
                         image = self._font_long_thumb(_filepath, adj_size)
                 # Audio ========================================================
                 elif MediaCategories.is_ext_in_category(
@@ -1401,7 +1413,7 @@ class ThumbRenderer(QObject):
                             image = self._apply_overlay_color(image, UiColor.GREEN)
                 # Ebooks =======================================================
                 elif MediaCategories.is_ext_in_category(
-                    ext, MediaCategories.EBOOK_TYPES, mime_fallback=True
+                    ext, MediaCategories.EBOOK_TYPES, mime_fallback=True  
                 ):
                     image = self._epub_cover(_filepath)
                 # Blender ======================================================
@@ -1433,7 +1445,7 @@ class ThumbRenderer(QObject):
                 image = None
             except (
                 UnidentifiedImageError,
-                DecompressionBombError,
+                DecompressionBombError, 
                 ValueError,
                 ChildProcessError,
             ) as e:
