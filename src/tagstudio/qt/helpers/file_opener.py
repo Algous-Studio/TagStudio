@@ -13,7 +13,6 @@ import structlog
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QLabel, QWidget
-
 from tagstudio.qt.helpers.silent_popen import silent_Popen
 
 logger = structlog.get_logger(__name__)
@@ -108,13 +107,32 @@ class FileOpenerHelper:
         self.filepath = str(filepath)
 
     def open_file(self):
-        """Open the file in the default application."""
-        open_file(self.filepath)
+        """Open the file with djv_view.sh application."""
+        logger.info("Opening file with djv_view.sh", path=self.filepath)
+
+        try:
+            command = f'"/studio/tools/djv/bin/djv_view.sh" "{self.filepath}"'
+            if sys.platform == "win32":
+                subprocess.Popen(
+                    command,
+                    shell=True,
+                    close_fds=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+                    | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+                )
+            else:
+                subprocess.Popen(
+                    command,
+                    shell=True,
+                    close_fds=True
+                )
+
+        except Exception:
+            traceback.print_exc()
 
     def open_explorer(self):
         """Open the file in the default file explorer."""
         open_file(self.filepath, file_manager=True)
-
 
 class FileOpenerLabel(QLabel):
     def __init__(self, parent: QWidget | None = None) -> None:
