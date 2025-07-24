@@ -1353,9 +1353,9 @@ class ThumbRenderer(QObject):
                         dst_buf = oiio.ImageBufAlgo.colorconvert(src_buf, "sRGB", "linear")
                         
                         # Get the pixels as a numpy array
-                        pixels = dst_buf.get_pixels(oiio.UINT8, dstchannels=4)
+                        pixels = dst_buf.get_pixels(oiio.UINT8)
 
-                        image = Image.fromarray(pixels, mode="RGBA")
+                        image = Image.fromarray(pixels, mode="RGB")
 
                     # Raw Images -----------------------------------------------
                     elif MediaCategories.is_ext_in_category(
