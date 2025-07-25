@@ -31,6 +31,7 @@ dependencies = [
     "ujson~=5.10",
     "vtf2img~=0.1",
     "openexr",
+    "imageio[ffmpeg]",
 ]
 
 [project.optional-dependencies]
