@@ -1586,17 +1586,9 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.status_bar.showMessage(Translations["status.library_search_query"])
         self.main_window.status_bar.repaint()
 
-        page_size = self.settings.page_size
-        page_index = self.browsing_history.current.page_index
-        offset = page_index * page_size
-
-        # search the library with pagination parameters
+        # search the library
         start_time = time.time()
-        results = self.lib.search_library(
-            self.browsing_history.current,
-            page_size=page_size,
-            offset=offset,
-        )
+        results = self.lib.search_library(self.browsing_history.current, self.settings.page_size)
         logger.info("items to render", count=len(results))
         end_time = time.time()
 
@@ -1609,10 +1601,10 @@ class QtDriver(DriverMixin, QObject):
             )
         )
 
-        # Handle sequences and display entries
+        # refresh sequence registry and collapse results
         display_entries: list[Entry] = []
         if self.settings.group_sequences:
-            list(self.lib.refresh_sequences_for_page(offset, page_size))
+            list(self.lib.refresh_sequences())
             seq_map = self.lib.sequence_registry.entry_to_sequence
             self.frame_counts = []
             seen_posters: set[int] = set()
@@ -1629,12 +1621,12 @@ class QtDriver(DriverMixin, QObject):
             display_entries = results.items
             self.frame_counts = [None] * len(display_entries)
 
-        # Update page content
+        # update page content
         self.frame_content = [e.id for e in display_entries]
 
         self.update_thumbs()
 
-        # Update pagination
+        # update pagination
         self.pages_count = math.ceil(results.total_count / self.settings.page_size)
         self.main_window.pagination.update_buttons(
             self.pages_count, self.browsing_history.current.page_index, emit=False

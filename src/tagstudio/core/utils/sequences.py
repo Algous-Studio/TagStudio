@@ -38,13 +38,10 @@ class SequenceRegistry:
     def sequences_count(self) -> int:
         return len(self.sequences)
 
-    def refresh_sequences_for_page(self, offset: int, page_size: int) -> Iterator[int]:
-        """Detect groups of files that appear to be part of a sequence only for the current page."""
-        groups: dict[tuple[Path, str, str], SequenceEntry] = defaultdict(SequenceEntry)
+    def refresh_sequences(self) -> Iterator[int]:
+        """Detect groups of files that appear to be part of a sequence."""
 
-        entries_to_process = list(islice(self.library.get_entries(), offset, offset + page_size))
-        
-        for i, entry in enumerate(entries_to_process):
+        for i, entry in enumerate(self.library.get_entries()):
             match = SEQUENCE_RE.match(entry.path.stem)
             if match:
                 base = match.group(1)
@@ -62,7 +59,7 @@ class SequenceRegistry:
         for seq in self.sequences:
             for e in seq.entries:
                 self.entry_to_sequence[e.id] = seq
-                    
+                
     def ids_for_poster(self, entry_id: int) -> list[int]:
         """Return all entry IDs for the sequence represented by ``entry_id``.
 

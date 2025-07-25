@@ -228,9 +228,9 @@ class Library:
             self._sequence_registry = SequenceRegistry(library=self)
         return self._sequence_registry
 
-    def refresh_sequences_for_page(self, offset, page_size) -> Iterator[int]:
+    def refresh_sequences(self) -> Iterator[int]:
         """Update internal sequence registry."""
-        return self.sequence_registry.refresh_sequences_for_page(offset, page_size)
+        return self.sequence_registry.refresh_sequences()
     
     def close(self):
         if self.engine:
@@ -1013,7 +1013,6 @@ class Library:
         self,
         search: BrowsingState,
         page_size: int,
-        offset: int  # добавлен параметр offset
     ) -> SearchResult:
         """Filter library by search query.
 
@@ -1058,7 +1057,7 @@ class Library:
                     sort_on = func.lower(Entry.path)
 
             statement = statement.order_by(asc(sort_on) if search.ascending else desc(sort_on))
-            statement = statement.limit(page_size).offset(offset)  # используется offset
+            statement = statement.limit(page_size).offset(search.page_index * page_size)
 
             logger.info(
                 "searching library",
