@@ -6,6 +6,7 @@
 import re
 import shutil
 import time
+import subprocess
 import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -213,7 +214,8 @@ class Library:
     folder: Folder | None
     included_files: set[Path] = set()
 
-    SQL_FILENAME: str = "ts_library.sqlite"
+    SQL_FILENAME: str = "ts_library.pg"
+    POSTGRES_URL: str = "postgresql+psycopg2://postgres:acescg@localhost/tagstudio_db"
     JSON_FILENAME: str = "ts_library.json"
 
     _sequence_registry: "SequenceRegistry | None" = None
@@ -233,13 +235,13 @@ class Library:
     def close(self):
         if self.engine:
             self.engine.dispose()
-        self.library_dir: Path | None = None
+        self.library_dir = None
         self.storage_path = None
         self.folder = None
         self.included_files = set()
 
-    def migrate_json_to_sqlite(self, json_lib: JsonLibrary):
-        """Migrate JSON library data to the SQLite database."""
+    def migrate_json_to_postgres(self, json_lib: JsonLibrary):
+        """Migrate JSON library data to the PostgreSQL database."""
         logger.info("Starting Library Conversion...")
         start_time = time.time()
         folder: Folder = Folder(path=self.library_dir, uuid=str(uuid4()))
@@ -346,25 +348,159 @@ class Library:
             else:
                 return tag.name
 
-    def open_library(self, library_dir: Path, storage_path: Path | None = None) -> LibraryStatus:
-        is_new: bool = True
+    def open_library(self, library_dir: Path, storage_path: str | None = None) -> LibraryStatus:
+        """Open or create a library located at ``library_dir``."""
+
         if storage_path == ":memory:":
+            # Allow tests to use an in-memory SQLite database
             self.storage_path = storage_path
-            is_new = True
-            return self.open_sqlite_library(library_dir, is_new)
-        else:
-            self.storage_path = library_dir / TS_FOLDER_NAME / self.SQL_FILENAME
-            if self.verify_ts_folder(library_dir) and (is_new := not self.storage_path.exists()):
-                json_path = library_dir / TS_FOLDER_NAME / self.JSON_FILENAME
-                if json_path.exists():
+            return self.open_sqlite_library(library_dir, True)
+
+        # Path to the connection string file
+        cfg_path = library_dir / TS_FOLDER_NAME / self.SQL_FILENAME
+        connection_string: str
+        is_new = True
+
+        if self.verify_ts_folder(library_dir):
+            if cfg_path.exists():
+                try:
+                    connection_string = cfg_path.read_text().strip()
+                    is_new = False
+                except UnicodeDecodeError:
+                    logger.warning(
+                        "[Library] Could not decode connection string, recreating", file=cfg_path
+                    )
+                    connection_string = storage_path or self.POSTGRES_URL
+                    cfg_path.write_text(connection_string, encoding="utf-8")
+                    is_new = True
+            else:
+                connection_string = storage_path or self.POSTGRES_URL
+                cfg_path.write_text(connection_string, encoding="utf-8")
+            self.storage_path = connection_string
+            return self.open_postgres_library(library_dir, is_new)
+
+        return LibraryStatus(success=False, library_path=library_dir)
+
+    def open_postgres_library(self, library_dir: Path, is_new: bool) -> LibraryStatus:
+        connection_string = self.storage_path
+        db_version: int = 0
+        logger.info(
+            "[Library] Opening Postgres Library",
+            library_dir=library_dir,
+            connection_string=connection_string,
+        )
+        self.engine = create_engine(connection_string)
+        with Session(self.engine) as session:
+            if not is_new:
+                db_result = session.scalar(
+                    select(Preferences).where(Preferences.key == LibraryPrefs.DB_VERSION.name)
+                )
+                if db_result:
+                    db_version = db_result.value
+                if db_version < 6 or db_version > LibraryPrefs.DB_VERSION.default:
+                    mismatch_text = Translations["status.library_version_mismatch"]
+                    found_text = Translations["status.library_version_found"]
+                    expected_text = Translations["status.library_version_expected"]
                     return LibraryStatus(
                         success=False,
-                        library_path=library_dir,
-                        message="[JSON] Legacy v9.4 library requires conversion to v9.5+",
-                        json_migration_req=True,
+                        message=(
+                            f"{mismatch_text}\n"
+                            f"{found_text} v{db_version}, "
+                            f"{expected_text} v{LibraryPrefs.DB_VERSION.default}"
+                        ),
                     )
 
-        return self.open_sqlite_library(library_dir, is_new)
+            logger.info(f"[Library] DB_VERSION: {db_version}")
+            make_tables(self.engine)
+            if is_new:
+                namespaces = default_color_groups.namespaces()
+                try:
+                    session.add_all(namespaces)
+                    session.commit()
+                except IntegrityError as e:
+                    logger.error("[Library] Couldn't add default tag color namespaces", error=e)
+                    session.rollback()
+
+            if is_new:
+                tag_colors: list[TagColorGroup] = default_color_groups.standard()
+                tag_colors += default_color_groups.pastels()
+                tag_colors += default_color_groups.shades()
+                tag_colors += default_color_groups.grayscale()
+                tag_colors += default_color_groups.earth_tones()
+                tag_colors += default_color_groups.neon()
+                if is_new:
+                    try:
+                        session.add_all(tag_colors)
+                        session.commit()
+                    except IntegrityError as e:
+                        logger.error("[Library] Couldn't add default tag colors", error=e)
+                        session.rollback()
+
+            if is_new:
+                tags = get_default_tags()
+                try:
+                    session.add_all(tags)
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+
+            for pref in LibraryPrefs:
+                with catch_warnings(record=True):
+                    try:
+                        session.add(Preferences(key=pref.name, value=pref.default))
+                        session.commit()
+                    except IntegrityError:
+                        logger.debug("preference already exists", pref=pref)
+                        session.rollback()
+
+            for field in _FieldID:
+                try:
+                    session.add(
+                        ValueType(
+                            key=field.name,
+                            name=field.value.name,
+                            type=field.value.type,
+                            position=field.value.id,
+                            is_default=field.value.is_default,
+                        )
+                    )
+                    session.commit()
+                except IntegrityError:
+                    logger.debug("ValueType already exists", field=field)
+                    session.rollback()
+
+            self.folder = session.scalar(select(Folder).where(Folder.path == library_dir))
+            if not self.folder:
+                folder = Folder(
+                    path=library_dir,
+                    uuid=str(uuid4()),
+                )
+                session.add(folder)
+                session.expunge(folder)
+                session.commit()
+                self.folder = folder
+
+            if not is_new:
+                if LibraryPrefs.DB_VERSION.default != db_version:
+                    self.library_dir = library_dir
+                    self.save_library_backup_to_disk()
+                    self.library_dir = None
+                if db_version < 8:
+                    self.apply_db8_schema_changes(session)
+                if db_version < 9:
+                    self.apply_db9_schema_changes(session)
+                if db_version == 6:
+                    self.apply_repairs_for_db6(session)
+                if db_version >= 6 and db_version < 8:
+                    self.apply_db8_default_data(session)
+                if db_version < 9:
+                    self.apply_db9_filename_population(session)
+
+            if LibraryPrefs.DB_VERSION.default > db_version:
+                self.set_prefs(LibraryPrefs.DB_VERSION, LibraryPrefs.DB_VERSION.default)
+
+        self.library_dir = library_dir
+        return LibraryStatus(success=True, library_path=library_dir)
 
     def open_sqlite_library(self, library_dir: Path, is_new: bool) -> LibraryStatus:
         connection_string = URL.create(
@@ -382,7 +518,7 @@ class Library:
         db_version: int = 0
 
         logger.info(
-            "[Library] Opening SQLite Library",
+            "[Library] Opening Postgres  Library",
             library_dir=library_dir,
             connection_string=connection_string,
         )
@@ -816,6 +952,9 @@ class Library:
             raise ValueError("No path set.")
 
         if not library_dir.exists():
+            logger.info("creating library path", path=library_dir)
+            library_dir.mkdir(parents=True, exist_ok=True)
+        elif not library_dir.is_dir():
             raise ValueError("Invalid library directory.")
 
         full_ts_path = library_dir / TS_FOLDER_NAME
@@ -1419,13 +1558,13 @@ class Library:
         assert isinstance(self.library_dir, Path)
         makedirs(str(self.library_dir / TS_FOLDER_NAME / BACKUP_FOLDER_NAME), exist_ok=True)
 
-        filename = f"ts_library_backup_{datetime.now(UTC).strftime('%Y_%m_%d_%H%M%S')}.sqlite"
+        filename = f"ts_library_backup_{datetime.now(UTC).strftime('%Y_%m_%d_%H%M%S')}.sql"
 
         target_path = self.library_dir / TS_FOLDER_NAME / BACKUP_FOLDER_NAME / filename
 
-        shutil.copy2(
-            self.library_dir / TS_FOLDER_NAME / self.SQL_FILENAME,
-            target_path,
+        subprocess.run(
+            ["pg_dump", "-f", str(target_path), "tagstudio"],
+            check=True,
         )
 
         logger.info("Library backup saved to disk.", path=target_path)

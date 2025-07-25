@@ -32,7 +32,7 @@ from tagstudio.core.constants import (
 from tagstudio.core.enums import LibraryPrefs
 from tagstudio.core.library.alchemy import default_color_groups
 from tagstudio.core.library.alchemy.joins import TagParent
-from tagstudio.core.library.alchemy.library import Library as SqliteLibrary
+from tagstudio.core.library.alchemy.library import Library as PostgresLibrary
 from tagstudio.core.library.alchemy.models import Entry, TagAlias
 from tagstudio.core.library.json.library import Library as JsonLibrary
 from tagstudio.core.library.json.library import Tag as JsonTag
@@ -48,7 +48,7 @@ logger = structlog.get_logger(__name__)
 
 
 class JsonMigrationModal(QObject):
-    """A modal for data migration from v9.4 JSON to v9.5+ SQLite."""
+    """A modal for data migration from v9.4 JSON to v9.5+ PostgresLibrary."""
 
     migration_cancelled = Signal()
     migration_finished = Signal()
@@ -60,7 +60,7 @@ class JsonMigrationModal(QObject):
 
         self.stack: list[PagedPanelState] = []
         self.json_lib: JsonLibrary = None
-        self.sql_lib: SqliteLibrary = None
+        self.sql_lib: PostgresLibrary = None
         self.is_migration_initialized: bool = False
         self.discrepancies: list[str] = []
 
@@ -318,7 +318,7 @@ class JsonMigrationModal(QObject):
         )
 
     def migrate(self, skip_ui: bool = False):
-        """Open and migrate the JSON library to SQLite."""
+        """Open and migrate the JSON library to PostgreSQL."""
         if not self.is_migration_initialized:
             self.paged_panel.update_frame()
             self.paged_panel.update()
@@ -401,21 +401,14 @@ class JsonMigrationModal(QObject):
     def migration_iterator(self):
         """Iterate over the library migration process."""
         try:
-            # Convert JSON Library to SQLite
+            # Convert JSON Library to PostgreSQL
             yield Translations["json_migration.creating_database_tables"]
-            self.sql_lib = SqliteLibrary()
-            self.temp_path: Path = (
-                self.json_lib.library_dir / TS_FOLDER_NAME / "migration_ts_library.sqlite"
-            )
-            self.sql_lib.storage_path = self.temp_path
-            if self.temp_path.exists():
-                logger.info('Temporary migration file "temp_path" already exists. Removing...')
-                self.temp_path.unlink()
-            self.sql_lib.open_sqlite_library(self.json_lib.library_dir, is_new=True)
+            self.sql_lib = PostgresLibrary()
+            self.sql_lib.open_postgres_library(self.json_lib.library_dir, is_new=True)
             yield Translations.format(
                 "json_migration.migrating_files_entries", entries=len(self.json_lib.entries)
             )
-            self.sql_lib.migrate_json_to_sqlite(self.json_lib)
+            self.sql_lib.migrate_json_to_postgres(self.json_lib)
             yield Translations["json_migration.checking_for_parity"]
             check_set = set()
             check_set.add(self.check_field_parity())
@@ -492,9 +485,7 @@ class JsonMigrationModal(QObject):
 
     def finish_migration(self):
         """Finish the migration upon user approval."""
-        final_name = self.json_lib.library_dir / TS_FOLDER_NAME / SqliteLibrary.SQL_FILENAME
-        if self.temp_path.exists():
-            self.temp_path.rename(final_name)
+        pass
 
     def update_json_entry_count(self, value: int):
         self.old_entry_count = value
