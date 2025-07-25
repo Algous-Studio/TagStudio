@@ -897,6 +897,36 @@ class Library:
             make_transient(entry)
             return entry
 
+    def get_entries_for_page(self, page_size: int, page_index: int, with_joins: bool = False) -> Iterator[Entry]:
+        """Загружает записи для текущей страницы с учетом пагинации."""
+        offset = page_index * page_size
+
+        with Session(self.engine) as session:
+            stmt = select(Entry)
+            
+            if with_joins:
+                # Загружаем записи с соединениями
+                stmt = (
+                    stmt.outerjoin(Entry.text_fields)
+                    .outerjoin(Entry.datetime_fields)
+                    .outerjoin(Entry.tags)
+                )
+                stmt = stmt.options(
+                    contains_eager(Entry.text_fields),
+                    contains_eager(Entry.datetime_fields),
+                    contains_eager(Entry.tags),
+                )
+            
+            stmt = stmt.distinct()
+
+            stmt = stmt.limit(page_size).offset(offset)
+            
+            entries = session.execute(stmt).scalars()
+
+            for entry in entries:
+                yield entry
+                session.expunge(entry)
+
     @property
     def entries_count(self) -> int:
         with Session(self.engine) as session:

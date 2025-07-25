@@ -1571,7 +1571,7 @@ class QtDriver(DriverMixin, QObject):
         return expanded
 
     def update_browsing_state(self, state: BrowsingState | None = None) -> None:
-        """Navigates to a new BrowsingState when state is given, otherwise updates the results."""
+        """Навигация к новому состоянию поиска, если оно передано, или обновление результатов."""
         if not self.lib.library_dir:
             logger.info("Library not loaded")
             return
@@ -1580,31 +1580,16 @@ class QtDriver(DriverMixin, QObject):
         if state:
             self.browsing_history.push(state)
 
-        self.main_window.search_field.setText(self.browsing_history.current.query or "")
+        page_size = self.settings.page_size
+        page_index = self.browsing_history.current.page_index
 
-        # inform user about running search
-        self.main_window.status_bar.showMessage(Translations["status.library_search_query"])
-        self.main_window.status_bar.repaint()
+        self.lib.sequence_registry.refresh_sequences(page_size, page_index)
 
-        # search the library
-        start_time = time.time()
-        results = self.lib.search_library(self.browsing_history.current, self.settings.page_size)
-        logger.info("items to render", count=len(results))
-        end_time = time.time()
+        results = self.lib.search_library(self.browsing_history.current, page_size=page_size)
 
-        # inform user about completed search
-        self.main_window.status_bar.showMessage(
-            Translations.format(
-                "status.results_found",
-                count=results.total_count,
-                time_span=format_timespan(end_time - start_time),
-            )
-        )
-
-        # refresh sequence registry and collapse results
-        display_entries: list[Entry] = []
+        display_entries = []
         if self.settings.group_sequences:
-            list(self.lib.refresh_sequences())
+            list(self.lib.sequence_registry.refresh_sequences(page_size, page_index))
             seq_map = self.lib.sequence_registry.entry_to_sequence
             self.frame_counts = []
             seen_posters: set[int] = set()
@@ -1621,17 +1606,15 @@ class QtDriver(DriverMixin, QObject):
             display_entries = results.items
             self.frame_counts = [None] * len(display_entries)
 
-        # update page content
+        # Обновление содержимого страницы
         self.frame_content = [e.id for e in display_entries]
-
         self.update_thumbs()
 
-        # update pagination
+        # Обновление пагинации
         self.pages_count = math.ceil(results.total_count / self.settings.page_size)
         self.main_window.pagination.update_buttons(
             self.pages_count, self.browsing_history.current.page_index, emit=False
         )
-
 
     def remove_recent_library(self, item_key: str):
         self.cached_values.beginGroup(SettingItems.LIBS_LIST)
