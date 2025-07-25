@@ -1,6 +1,6 @@
-from sqlalchemy import create_engine, MetaData
+from sqlalchemy import create_engine, MetaData, Table, Column, Integer, String
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.dialects.postgresql import TIMESTAMP
 
 # Подключения
 sqlite_url = "sqlite://///studio/stock/.TagStudio/ts_library.sqlite"
@@ -13,10 +13,20 @@ postgres_engine = create_engine(postgres_url)
 sqlite_metadata = MetaData()
 sqlite_metadata.reflect(bind=sqlite_engine)
 
-# Создание таблиц в Postgres
-sqlite_metadata.create_all(bind=postgres_engine)
+# Преобразование DATETIME в TIMESTAMP для всех столбцов в таблицах
+for table in sqlite_metadata.sorted_tables:
+    for column in table.columns:
+        if 'DATETIME' in str(column.type):  # если тип столбца DATETIME
+            # Заменяем на TIMESTAMP для PostgreSQL
+            print(f"Changing {column.name} in table {table.name} from DATETIME to TIMESTAMP")
+            column.type = TIMESTAMP(timezone=True)  # явно указываем использование PostgreSQL TIMESTAMP
 
-# Очистка данных из Postgres
+try:
+    sqlite_metadata.create_all(bind=postgres_engine)
+except Exception as e:
+    print(f"Error creating tables in PostgreSQL: {e}")
+    exit(1)
+
 with postgres_engine.begin() as conn:
     for table in reversed(sqlite_metadata.sorted_tables):
         print(f"-> Clearing table: {table.name}")
@@ -29,7 +39,6 @@ PostgresSession = sessionmaker(bind=postgres_engine)
 sqlite_session = SqliteSession()
 postgres_session = PostgresSession()
 
-# Перенос данных
 for table in sqlite_metadata.sorted_tables:
     print(f"-> Migrating table: {table.name}")
     rows = [
@@ -37,8 +46,11 @@ for table in sqlite_metadata.sorted_tables:
         for row in sqlite_session.execute(table.select())
     ]
     if rows:
-        postgres_session.execute(table.insert(), rows)
-        print(f"   Inserted {len(rows)} rows.")
+        try:
+            postgres_session.execute(table.insert(), rows)
+            print(f"   Inserted {len(rows)} rows into {table.name}.")
+        except Exception as e:
+            print(f"Error migrating table {table.name}: {e}")
 
 postgres_session.commit()
 sqlite_session.close()
