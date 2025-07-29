@@ -215,7 +215,9 @@ class Library:
     included_files: set[Path] = set()
 
     SQL_FILENAME: str = "ts_library.pg"
-    POSTGRES_URL: str = "postgresql+psycopg2://postgres:acescg@localhost/tagstudio_db"
+    # POSTGRES_URL: str = "postgresql+psycopg2://postgres:acescg@localhost/tagstudio_db"
+    POSTGRES_URL = "postgresql+psycopg2://tagstudio:securepass@192.168.1.10:5434/tagstudio_db"
+
     JSON_FILENAME: str = "ts_library.json"
 
     _sequence_registry: "SequenceRegistry | None" = None
@@ -364,7 +366,8 @@ class Library:
         if self.verify_ts_folder(library_dir):
             if cfg_path.exists():
                 try:
-                    connection_string = cfg_path.read_text().strip()
+                    # connection_string = cfg_path.read_text().strip()
+                    connection_string = self.POSTGRES_URL
                     is_new = False
                 except UnicodeDecodeError:
                     logger.warning(
