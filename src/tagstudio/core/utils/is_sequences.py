@@ -17,7 +17,7 @@ from sqlalchemy import update, text, inspect
 from tagstudio.core.library.alchemy.models import Entry
 from tagstudio.core.library.alchemy.library import Library
 
-SEQUENCE_EXTENSIONS = {"dpx", "exr", "jpg", "jpeg", "png", "tif", "tiff"}
+SEQUENCE_EXTENSIONS = {"dpx", "exr", "jpg", "jpeg", "png", "tif", "tiff", "ari", "tga"}
 SEQUENCE_RE = re.compile(r"^(.*?)(?:[._-]?)(\d{3,6})$")
 
 
@@ -86,6 +86,7 @@ def update_sequences(library: Library):
 
     registry = SequenceRegistry(library)
     registry.refresh_sequences()
+    print("AAAA")
 
     with Session(library.engine) as session:
         session.execute(update(Entry).values(is_sequence=False))
@@ -99,6 +100,7 @@ def update_sequences(library: Library):
                     .where(Entry.id == entry.id)
                     .values(is_sequence=(i != 0))
                 )
+
                 updated_count += 1
         session.commit()
 
