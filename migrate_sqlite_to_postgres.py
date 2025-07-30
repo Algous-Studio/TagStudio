@@ -13,13 +13,11 @@ postgres_engine = create_engine(postgres_url)
 sqlite_metadata = MetaData()
 sqlite_metadata.reflect(bind=sqlite_engine)
 
-# Преобразование DATETIME в TIMESTAMP для всех столбцов в таблицах
 for table in sqlite_metadata.sorted_tables:
     for column in table.columns:
-        if 'DATETIME' in str(column.type):  # если тип столбца DATETIME
-            # Заменяем на TIMESTAMP для PostgreSQL
+        if 'DATETIME' in str(column.type):
             print(f"Changing {column.name} in table {table.name} from DATETIME to TIMESTAMP")
-            column.type = TIMESTAMP(timezone=True)  # явно указываем использование PostgreSQL TIMESTAMP
+            column.type = TIMESTAMP(timezone=True)
 
 try:
     sqlite_metadata.create_all(bind=postgres_engine)
