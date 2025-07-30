@@ -1069,6 +1069,7 @@ class Library:
                 statement = statement.where(Entry.suffix.notin_(extensions))
             elif extensions:
                 statement = statement.where(Entry.suffix.in_(extensions))
+            statement = statement.where(Entry.is_sequence.is_(False))
 
             statement = statement.distinct(Entry.id)
             start_time = time.time()
