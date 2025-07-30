@@ -90,7 +90,6 @@ from tagstudio.qt.translations import Translations
 if TYPE_CHECKING:
     from sqlalchemy import Select
     
-    from tagstudio.core.utils.sequences import SequenceRegistry
 
 logger = structlog.get_logger(__name__)
 
@@ -218,20 +217,7 @@ class Library:
     POSTGRES_URL: str = "postgresql+psycopg2://postgres:acescg@localhost/tagstudio_db"
     JSON_FILENAME: str = "ts_library.json"
 
-    _sequence_registry: "SequenceRegistry | None" = None
 
-    @property
-    def sequence_registry(self) -> "SequenceRegistry":
-        if self._sequence_registry is None:
-            from tagstudio.core.utils.sequences import SequenceRegistry
-
-            self._sequence_registry = SequenceRegistry(library=self)
-        return self._sequence_registry
-
-    def refresh_sequences(self) -> Iterator[int]:
-        """Update internal sequence registry."""
-        return self.sequence_registry.refresh_sequences()
-    
     def close(self):
         if self.engine:
             self.engine.dispose()
@@ -896,36 +882,6 @@ class Library:
             session.expunge(entry)
             make_transient(entry)
             return entry
-
-    def get_entries_for_page(self, page_size: int, page_index: int, with_joins: bool = False) -> Iterator[Entry]:
-        """Загружает записи для текущей страницы с учетом пагинации."""
-        offset = page_index * page_size
-
-        with Session(self.engine) as session:
-            stmt = select(Entry)
-            
-            if with_joins:
-                # Загружаем записи с соединениями
-                stmt = (
-                    stmt.outerjoin(Entry.text_fields)
-                    .outerjoin(Entry.datetime_fields)
-                    .outerjoin(Entry.tags)
-                )
-                stmt = stmt.options(
-                    contains_eager(Entry.text_fields),
-                    contains_eager(Entry.datetime_fields),
-                    contains_eager(Entry.tags),
-                )
-            
-            stmt = stmt.distinct()
-
-            stmt = stmt.limit(page_size).offset(offset)
-            
-            entries = session.execute(stmt).scalars()
-
-            for entry in entries:
-                yield entry
-                session.expunge(entry)
 
     @property
     def entries_count(self) -> int:

@@ -242,7 +242,6 @@
     "settings.page_size": "Page Size",
     "settings.restart_required": "Please restart TagStudio for changes to take effect.",
     "settings.show_filenames_in_grid": "Show Filenames in Grid",
-    "settings.group_sequences": "Group Sequential Frames",
     "settings.show_recent_libraries": "Show Recent Libraries",
     "settings.tag_click_action.label": "Tag Click Action",
     "settings.tag_click_action.add_to_search": "Add Tag to Search",

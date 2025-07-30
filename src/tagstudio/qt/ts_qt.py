@@ -847,8 +847,7 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.preview_panel.update_widgets()
 
     def add_tags_to_selected_callback(self, tag_ids: list[int]):
-        entry_ids = self._expand_sequence_ids(self.selected)
-        self.lib.add_tags_to_entries(entry_ids, tag_ids)
+        self.lib.add_tags_to_entries(self.selected, tag_ids)
 
     def delete_files_callback(self, origin_path: str | Path, origin_id: int | None = None):
         """Callback to send on or more files to the system trash.
@@ -1223,8 +1222,7 @@ class QtDriver(DriverMixin, QObject):
                         exists = True
                 if not exists:
                     self.lib.add_field_to_entry(id, field_id=field.type_key, value=field.value)
-            entry_ids = self._expand_sequence_ids([id])
-            self.lib.add_tags_to_entries(entry_ids, self.copy_buffer["tags"])
+            enself.lib.add_tags_to_entries(id, self.copy_buffer["tags"])
         if len(self.selected) > 1:
             if TAG_ARCHIVED in self.copy_buffer["tags"]:
                 self.update_badges({BadgeType.ARCHIVED: True}, origin_id=0, add_tags=False)
@@ -1550,11 +1548,13 @@ class QtDriver(DriverMixin, QObject):
         )
         for badge_type, value in badge_values.items():
             if value:
-                ids = self._expand_sequence_ids(pending_entries.get(badge_type, []))
-                self.lib.add_tags_to_entries(ids, BADGE_TAGS[badge_type])
+                self.lib.add_tags_to_entries(
+                    pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
+                )
             else:
-                ids = self._expand_sequence_ids(pending_entries.get(badge_type, []))
-                self.lib.remove_tags_from_entries(ids, BADGE_TAGS[badge_type])
+                self.lib.remove_tags_from_entries(
+                    pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
+                )
     
     def _expand_sequence_ids(self, ids: list[int]) -> list[int]:
         """Expand sequence poster IDs to include their frame IDs."""
@@ -1571,46 +1571,36 @@ class QtDriver(DriverMixin, QObject):
         return expanded
 
     def update_browsing_state(self, state: BrowsingState | None = None) -> None:
-        """Навигация к новому состоянию поиска, если оно передано, или обновление результатов."""
+        """Navigates to a new BrowsingState when state is given, otherwise updates the results."""
         if not self.lib.library_dir:
             logger.info("Library not loaded")
             return
         assert self.lib.engine
-
         if state:
             self.browsing_history.push(state)
+        self.main_window.search_field.setText(self.browsing_history.current.query or "")
+        # inform user about running search
+        self.main_window.status_bar.showMessage(Translations["status.library_search_query"])
+        self.main_window.status_bar.repaint()
+        # search the library
+        start_time = time.time()
+        results = self.lib.search_library(self.browsing_history.current, self.settings.page_size)
+        logger.info("items to render", count=len(results))
+        end_time = time.time()
+        # inform user about completed search
+        self.main_window.status_bar.showMessage(
+            Translations.format(
+                "status.results_found",
+                count=results.total_count,
+                time_span=format_timespan(end_time - start_time),
+            )
+        )
 
-        page_size = self.settings.page_size
-        page_index = self.browsing_history.current.page_index
-
-        self.lib.sequence_registry.refresh_sequences(page_size, page_index)
-
-        results = self.lib.search_library(self.browsing_history.current, page_size=page_size)
-
-        display_entries = []
-        if self.settings.group_sequences:
-            list(self.lib.sequence_registry.refresh_sequences(page_size, page_index))
-            seq_map = self.lib.sequence_registry.entry_to_sequence
-            self.frame_counts = []
-            seen_posters: set[int] = set()
-            for item in results.items:
-                seq = seq_map.get(item.id)
-                if seq and seq.poster and seq.poster.id not in seen_posters:
-                    display_entries.append(seq.poster)
-                    self.frame_counts.append(seq.frame_count)
-                    seen_posters.add(seq.poster.id)
-                elif not seq:
-                    display_entries.append(item)
-                    self.frame_counts.append(None)
-        else:
-            display_entries = results.items
-            self.frame_counts = [None] * len(display_entries)
-
-        # Обновление содержимого страницы
-        self.frame_content = [e.id for e in display_entries]
+        # update page content
+        self.frame_content = [item.id for item in results.items]
         self.update_thumbs()
 
-        # Обновление пагинации
+        # update pagination
         self.pages_count = math.ceil(results.total_count / self.settings.page_size)
         self.main_window.pagination.update_buttons(
             self.pages_count, self.browsing_history.current.page_index, emit=False
