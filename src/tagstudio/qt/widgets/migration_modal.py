@@ -401,14 +401,21 @@ class JsonMigrationModal(QObject):
     def migration_iterator(self):
         """Iterate over the library migration process."""
         try:
-            # Convert JSON Library to PostgreSQL
+            # Convert JSON Library to SQLite
             yield Translations["json_migration.creating_database_tables"]
-            self.sql_lib = PostgresLibrary()
-            self.sql_lib.open_postgres_library(self.json_lib.library_dir, is_new=True)
+            self.sql_lib = SqliteLibrary()
+            self.temp_path: Path = (
+                self.json_lib.library_dir / TS_FOLDER_NAME / "migration_ts_library.sqlite"
+            )
+            self.sql_lib.storage_path = self.temp_path
+            if self.temp_path.exists():
+                logger.info('Temporary migration file "temp_path" already exists. Removing...')
+                self.temp_path.unlink()
+            self.sql_lib.open_sqlite_library(self.json_lib.library_dir, is_new=True)
             yield Translations.format(
                 "json_migration.migrating_files_entries", entries=len(self.json_lib.entries)
             )
-            self.sql_lib.migrate_json_to_postgres(self.json_lib)
+            self.sql_lib.migrate_json_to_sqlite(self.json_lib)
             yield Translations["json_migration.checking_for_parity"]
             check_set = set()
             check_set.add(self.check_field_parity())
@@ -426,7 +433,6 @@ class JsonMigrationModal(QObject):
             QApplication.beep()
             QApplication.alert(self.paged_panel)
             self.done = True
-
         except Exception as e:
             traceback.print_stack()
             logger.error("[MigrationModal] Error:", error=e)
@@ -434,7 +440,6 @@ class JsonMigrationModal(QObject):
             QApplication.beep()
             QApplication.alert(self.paged_panel)
             self.done = True
-
     def update_parity_ui(self):
         """Update all parity values UI."""
         self.update_parity_value(self.fields_row, self.field_parity)
@@ -485,7 +490,9 @@ class JsonMigrationModal(QObject):
 
     def finish_migration(self):
         """Finish the migration upon user approval."""
-        pass
+        final_name = self.json_lib.library_dir / TS_FOLDER_NAME / SqliteLibrary.SQL_FILENAME
+        if self.temp_path.exists():
+            self.temp_path.rename(final_name)
 
     def update_json_entry_count(self, value: int):
         self.old_entry_count = value

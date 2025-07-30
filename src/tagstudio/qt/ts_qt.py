@@ -1416,13 +1416,10 @@ class QtDriver(DriverMixin, QObject):
             self.thumb_job_queue.not_full.notify_all()
             # Stops in-progress jobs from finishing
             ItemThumb.update_cutoff = time.time()
-
         ratio: float = self.main_window.devicePixelRatio()
         base_size: tuple[int, int] = (self.main_window.thumb_size, self.main_window.thumb_size)
-
         self.main_window.thumb_layout.update()
         self.main_window.update()
-
         is_grid_thumb = True
         logger.info("[QtDriver] Loading Entries...")
         # TODO: The full entries with joins don't need to be grabbed here.
@@ -1430,7 +1427,6 @@ class QtDriver(DriverMixin, QObject):
         entries: list[Entry] = list(self.lib.get_entries_full(self.frame_content))
         logger.info("[QtDriver] Building Filenames...")
         filenames: list[Path] = [self.lib.library_dir / e.path for e in entries]
-        counts = self.frame_counts
         logger.info("[QtDriver] Done! Processing ItemThumbs...")
         for index, item_thumb in enumerate(self.item_thumbs, start=0):
             entry = None
@@ -1441,16 +1437,11 @@ class QtDriver(DriverMixin, QObject):
                 continue
             if not entry:
                 continue
-
             with catch_warnings(record=True):
                 item_thumb.delete_action.triggered.disconnect()
 
             item_thumb.set_mode(ItemType.ENTRY)
             item_thumb.set_item_id(entry.id)
-            if index < len(counts) and counts[index]:
-                item_thumb.set_count(str(counts[index]))
-            else:
-                item_thumb.set_count("")
             item_thumb.show()
             is_loading = True
             self.thumb_job_queue.put(
@@ -1459,7 +1450,6 @@ class QtDriver(DriverMixin, QObject):
                     (sys.float_info.max, "", base_size, ratio, is_loading, is_grid_thumb),
                 )
             )
-
         # Show rendered thumbnails
         for index, item_thumb in enumerate(self.item_thumbs, start=0):
             entry = None
@@ -1470,7 +1460,6 @@ class QtDriver(DriverMixin, QObject):
                 continue
             if not entry:
                 continue
-
             is_loading = False
             self.thumb_job_queue.put(
                 (
@@ -1499,11 +1488,6 @@ class QtDriver(DriverMixin, QObject):
                     f, e_id
                 )
             )
-            
-            if index < len(counts) and counts[index]:
-                item_thumb.set_count(str(counts[index]))
-            else:
-                item_thumb.set_count("")
 
             # Restore Selected Borders
             is_selected = item_thumb.item_id in self.selected
