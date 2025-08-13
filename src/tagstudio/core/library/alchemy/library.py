@@ -1549,7 +1549,7 @@ class Library:
         target_path = self.library_dir / TS_FOLDER_NAME / BACKUP_FOLDER_NAME / filename
 
         subprocess.run(
-            ["pg_dump", "-f", str(target_path), "tagstudio"],
+            ["pg_dump", "-f", str(target_path), self.engine.url.database],
             check=True,
         )
 
