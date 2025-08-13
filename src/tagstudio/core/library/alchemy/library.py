@@ -504,7 +504,7 @@ class Library:
         db_version: int = 0
 
         logger.info(
-            "[Library] Opening Postgres  Library",
+            "[Library] Opening Postgres Library",
             library_dir=library_dir,
             connection_string=connection_string,
         )
