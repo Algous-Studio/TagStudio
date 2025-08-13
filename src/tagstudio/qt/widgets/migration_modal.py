@@ -48,7 +48,7 @@ logger = structlog.get_logger(__name__)
 
 
 class JsonMigrationModal(QObject):
-    """A modal for data migration from v9.4 JSON to v9.5+ PostgresLibrary."""
+    """A modal for data migration from v9.4 JSON to v9.5+ PostgreSQL."""
 
     migration_cancelled = Signal()
     migration_finished = Signal()
