@@ -86,7 +86,6 @@ def update_sequences(library: Library):
 
     registry = SequenceRegistry(library)
     registry.refresh_sequences()
-    print("AAAA")
     with Session(library.engine) as session:
         session.execute(update(Entry).values(is_sequence=False))
         session.commit()
