@@ -1222,7 +1222,7 @@ class QtDriver(DriverMixin, QObject):
                         exists = True
                 if not exists:
                     self.lib.add_field_to_entry(id, field_id=field.type_key, value=field.value)
-            enself.lib.add_tags_to_entries(id, self.copy_buffer["tags"])
+            self.lib.add_tags_to_entries(id, self.copy_buffer["tags"])
         if len(self.selected) > 1:
             if TAG_ARCHIVED in self.copy_buffer["tags"]:
                 self.update_badges({BadgeType.ARCHIVED: True}, origin_id=0, add_tags=False)
