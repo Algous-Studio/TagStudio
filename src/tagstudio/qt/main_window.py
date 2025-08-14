@@ -4,12 +4,14 @@
 
 
 import typing
+from collections.abc import Callable
 from pathlib import Path
 
 import structlog
+from PIL import Image, ImageQt
 from PySide6 import QtCore
 from PySide6.QtCore import QMetaObject, QSize, QStringListModel, Qt
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QCompleter,
@@ -33,12 +35,14 @@ from PySide6.QtWidgets import (
 
 from tagstudio.core.enums import ShowFilepathOption
 from tagstudio.core.library.alchemy.enums import SortingModeEnum
+from tagstudio.qt.controller.widgets.preview_panel_controller import PreviewPanel
 from tagstudio.qt.flowlayout import FlowLayout
+from tagstudio.qt.helpers.color_overlay import theme_fg_overlay
 from tagstudio.qt.pagination import Pagination
 from tagstudio.qt.platform_strings import trash_term
+from tagstudio.qt.resource_manager import ResourceManager
 from tagstudio.qt.translations import Translations
 from tagstudio.qt.widgets.landing import LandingWidget
-from tagstudio.qt.widgets.preview_panel import PreviewPanel
 
 # Only import for type checking/autocompletion, will not be imported at runtime.
 if typing.TYPE_CHECKING:
@@ -85,7 +89,7 @@ class MainMenuBar(QMenuBar):
     help_menu: QMenu
     about_action: QAction
 
-    def __init__(self, parent=...):
+    def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
 
         self.setup_file_menu()
@@ -304,6 +308,34 @@ class MainMenuBar(QMenuBar):
         self.show_filenames_action.setCheckable(True)
         self.view_menu.addAction(self.show_filenames_action)
 
+        self.view_menu.addSeparator()
+
+        self.increase_thumbnail_size_action = QAction(
+            Translations["menu.view.increase_thumbnail_size"], self
+        )
+        self.increase_thumbnail_size_action.setShortcut(
+            QtCore.QKeyCombination(
+                QtCore.Qt.KeyboardModifier(QtCore.Qt.KeyboardModifier.ControlModifier),
+                QtCore.Qt.Key.Key_Plus,
+            )
+        )
+        self.increase_thumbnail_size_action.setToolTip("Ctrl++")
+        self.view_menu.addAction(self.increase_thumbnail_size_action)
+
+        self.decrease_thumbnail_size_action = QAction(
+            Translations["menu.view.decrease_thumbnail_size"], self
+        )
+        self.decrease_thumbnail_size_action.setShortcut(
+            QtCore.QKeyCombination(
+                QtCore.Qt.KeyboardModifier(QtCore.Qt.KeyboardModifier.ControlModifier),
+                QtCore.Qt.Key.Key_Minus,
+            )
+        )
+        self.decrease_thumbnail_size_action.setToolTip("Ctrl+-")
+        self.view_menu.addAction(self.decrease_thumbnail_size_action)
+
+        self.view_menu.addSeparator()
+
         self.addMenu(self.view_menu)
 
     def setup_tools_menu(self):
@@ -353,8 +385,8 @@ class MainMenuBar(QMenuBar):
         self,
         libraries: list[Path],
         show_filepath: ShowFilepathOption,
-        open_library_callback,
-        clear_libraries_callback,
+        open_library_callback: Callable[[Path], None],
+        clear_libraries_callback: Callable[[], None],
     ):
         actions: list[QAction] = []
         for path in libraries:
@@ -399,8 +431,42 @@ class MainWindow(QMainWindow):
         (Translations["home.thumbnail_size.mini"], 76),
     ]
 
-    def __init__(self, driver: "QtDriver", parent=None) -> None:
+    def __init__(self, driver: "QtDriver", parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self.rm = ResourceManager()
+
+        # region Type declarations for variables that will be initialized in methods
+        # initialized in setup_search_bar
+        self.search_bar_layout: QHBoxLayout
+        self.back_button: QPushButton
+        self.forward_button: QPushButton
+        self.search_field: QLineEdit
+        self.search_field_completion_list: QStringListModel
+        self.search_field_completer: QCompleter
+        self.search_button: QPushButton
+
+        # initialized in setup_extra_input_bar
+        self.extra_input_layout: QHBoxLayout
+        self.sorting_mode_combobox: QComboBox
+        self.sorting_direction_combobox: QComboBox
+        self.thumb_size_combobox: QComboBox
+
+        # initialized in setup_content
+        self.content_layout: QHBoxLayout
+        self.content_splitter: QSplitter
+
+        # initialized in setup_entry_list
+        self.entry_list_container: QWidget
+        self.entry_list_layout: QVBoxLayout
+        self.entry_scroll_area: QScrollArea
+        self.thumb_grid: QWidget
+        self.thumb_layout: FlowLayout
+        self.landing_widget: LandingWidget
+        self.pagination: Pagination
+
+        # initialized in setup_preview_panel
+        self.preview_panel: PreviewPanel
+        # endregion
 
         if not self.objectName():
             self.setObjectName("MainWindow")
@@ -452,23 +518,27 @@ class MainWindow(QMainWindow):
 
     def setup_search_bar(self):
         """Sets up Nav Buttons, Search Field, Search Button."""
-        nav_button_style = "font-size:14;font-weight:bold;"
         self.search_bar_layout = QHBoxLayout()
         self.search_bar_layout.setObjectName("search_bar_layout")
         self.search_bar_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
-        self.back_button = QPushButton("<", self.central_widget)
+        self.back_button = QPushButton(self.central_widget)
+        back_icon: Image.Image = self.rm.get("bxs-left-arrow")  # pyright: ignore[reportAssignmentType]
+        back_icon = theme_fg_overlay(back_icon, use_alpha=False)
+        self.back_button.setIcon(QPixmap.fromImage(ImageQt.ImageQt(back_icon)))
         self.back_button.setObjectName("back_button")
-        self.back_button.setMinimumSize(QSize(0, 32))
+        self.back_button.setMinimumSize(QSize(32, 32))
         self.back_button.setMaximumSize(QSize(32, 16777215))
-        self.back_button.setStyleSheet(nav_button_style)
         self.search_bar_layout.addWidget(self.back_button)
 
-        self.forward_button = QPushButton(">", self.central_widget)
+        self.forward_button = QPushButton(self.central_widget)
+        forward_icon: Image.Image = self.rm.get("bxs-right-arrow")  # pyright: ignore[reportAssignmentType]
+        forward_icon = theme_fg_overlay(forward_icon, use_alpha=False)
+        self.forward_button.setIcon(QPixmap.fromImage(ImageQt.ImageQt(forward_icon)))
+        self.forward_button.setIconSize(QSize(16, 16))
         self.forward_button.setObjectName("forward_button")
-        self.forward_button.setMinimumSize(QSize(0, 32))
+        self.forward_button.setMinimumSize(QSize(32, 32))
         self.forward_button.setMaximumSize(QSize(32, 16777215))
-        self.forward_button.setStyleSheet(nav_button_style)
         self.search_bar_layout.addWidget(self.forward_button)
 
         self.search_field = QLineEdit(self.central_widget)
@@ -568,7 +638,7 @@ class MainWindow(QMainWindow):
         self.entry_scroll_area.setWidgetResizable(True)
         self.entry_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        self.thumb_grid: QWidget = QWidget()
+        self.thumb_grid = QWidget()
         self.thumb_grid.setObjectName("thumb_grid")
         self.thumb_layout = FlowLayout()
         self.thumb_layout.enable_grid_optimizations(value=True)
@@ -579,7 +649,7 @@ class MainWindow(QMainWindow):
 
         self.entry_list_layout.addWidget(self.entry_scroll_area)
 
-        self.landing_widget: LandingWidget = LandingWidget(driver, self.devicePixelRatio())
+        self.landing_widget = LandingWidget(driver, self.devicePixelRatio())
         self.entry_list_layout.addWidget(self.landing_widget)
 
         self.pagination = Pagination()
@@ -604,14 +674,6 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
 
     # endregion
-
-    def moveEvent(self, event) -> None:  # noqa: N802
-        # time.sleep(0.02)  # sleep for 20ms
-        pass
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        # time.sleep(0.02)  # sleep for 20ms
-        pass
 
     def toggle_landing_page(self, enabled: bool):
         if enabled:
