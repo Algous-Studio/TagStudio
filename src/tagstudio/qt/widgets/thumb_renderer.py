@@ -18,7 +18,6 @@ import numpy as np
 import rawpy
 import srctools
 import structlog
-from cv2.typing import MatLike
 from mutagen import MutagenError, flac, id3, mp4
 from PIL import (
     Image,
@@ -88,7 +87,8 @@ class ThumbRenderer(QObject):
 
     rm: ResourceManager = ResourceManager()
     cache: CacheManager = CacheManager()
-    updated = Signal(float, QPixmap, QSize, Path)
+    # Signal: timestamp, image, size, filename, is_animated, animated_path
+    updated = Signal(float, QPixmap, QSize, Path, bool, str)
     updated_ratio = Signal(float)
 
     cached_img_res: int = 256  # TODO: Pull this from config
@@ -110,6 +110,12 @@ class ThumbRenderer(QObject):
 
         # Key: ("name", UiColor, 512, 512, 1.25)
         self.icons: dict[tuple[str, UiColor, int, int, float], Image.Image] = {}
+
+    def _get_hash_string(self, filepath: Path) -> str:
+        """Generate a hash string for cache lookups based on filepath and modification time."""
+        mod_time = filepath.stat().st_mtime_ns if filepath.exists() else ""
+        hashable_str = f"{str(filepath)}{mod_time}"
+        return hashlib.shake_128(hashable_str.encode("utf-8")).hexdigest(8)
 
     def _get_resource_id(self, url: Path) -> str:
         """Return the name of the icon resource to use for a file type.
@@ -862,7 +868,170 @@ class ThumbRenderer(QObject):
         return im
 
     @staticmethod
-    def _image_thumb(filepath: Path) -> Image.Image:
+    def _image_animated_thumb(
+        filepath: Path, save_to_file: Path | None = None
+    ) -> tuple[Image.Image | None, bytes | None]:
+        """Create an animated thumbnail for an image file.
+        
+        Args:
+            filepath (Path): The path of the image file.
+            save_to_file (Path): Optional path to save the animated WebP.
+            
+        Returns:
+            tuple: (first_frame_image, animated_webp_bytes)
+        """
+        frames: list[Image.Image] = []
+        try:
+            with Image.open(filepath) as im:
+                if not getattr(im, 'is_animated', False) or getattr(im, 'n_frames', 1) <= 1:
+                    return im, None
+
+                for i in range(im.n_frames):
+                    im.seek(i)
+                    frame = im.convert("RGBA")
+                    
+                    # Create a new image with a solid background
+                    new_bg = Image.new("RGBA", frame.size, color=(255, 255, 255, 255))
+                    new_bg.paste(frame, (0, 0), frame)
+                    frames.append(new_bg.convert("RGB"))
+
+                if frames:
+                    # Create animated WebP
+                    from io import BytesIO
+                    webp_buffer = BytesIO()
+                    
+                    duration = im.info.get('duration', 100)
+                    
+                    frames[0].save(
+                        webp_buffer,
+                        format='WebP',
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=duration,
+                        loop=im.info.get('loop', 0),
+                        quality=85,
+                        method=6,
+                        lossless=False,
+                        minimize_size=True,
+                    )
+                    
+                    animated_bytes = webp_buffer.getvalue()
+                    
+                    if save_to_file:
+                        with open(save_to_file, 'wb') as f:
+                            f.write(animated_bytes)
+                    
+                    return frames[0], animated_bytes
+                    
+        except Exception as e:
+            logger.error(
+                "Couldn't create animated image thumbnail",
+                filepath=filepath,
+                error=type(e).__name__,
+            )
+        
+        return None, None
+
+    @staticmethod
+    def _image_exr_thumb(filepath: Path) -> Image.Image:
+        """Render a thumbnail for an EXR image with HDR tone mapping.
+
+        Args:
+            filepath (Path): The path of the file.
+        """
+        im: Image.Image = None
+        try:
+            # Use OpenEXR library directly for proper EXR handling
+            import Imath
+            import OpenEXR
+            
+            # Open EXR file
+            exr_file = OpenEXR.InputFile(str(filepath))
+            header = exr_file.header()
+            
+            # Get image dimensions
+            dw = header['dataWindow']
+            width = dw.max.x - dw.min.x + 1
+            height = dw.max.y - dw.min.y + 1
+            
+            # Get available channels
+            channels = header['channels']
+            
+            # Read RGB channels (fallback to available channels if RGB not present)
+            float_type = Imath.PixelType(Imath.PixelType.FLOAT)
+            
+            if 'R' in channels and 'G' in channels and 'B' in channels:
+                # RGB channels available
+                r_str = exr_file.channel('R', float_type)
+                g_str = exr_file.channel('G', float_type)
+                b_str = exr_file.channel('B', float_type)
+                
+                # Convert to numpy arrays
+                r = np.frombuffer(r_str, dtype=np.float32).reshape(height, width)
+                g = np.frombuffer(g_str, dtype=np.float32).reshape(height, width)
+                b = np.frombuffer(b_str, dtype=np.float32).reshape(height, width)
+                
+                # Stack channels
+                exr_image = np.stack([r, g, b], axis=2)
+            
+            elif 'Y' in channels:
+                # Luminance channel only
+                y_str = exr_file.channel('Y', float_type)
+                y = np.frombuffer(y_str, dtype=np.float32).reshape(height, width)
+                # Convert grayscale to RGB
+                exr_image = np.stack([y, y, y], axis=2)
+            
+            else:
+                # Use first available channel
+                channel_name = list(channels.keys())[0]
+                ch_str = exr_file.channel(channel_name, float_type)
+                ch = np.frombuffer(ch_str, dtype=np.float32).reshape(height, width)
+                exr_image = np.stack([ch, ch, ch], axis=2)
+            
+            # Apply tone mapping (simple gamma correction)
+            gamma = 1.0 / 2.2
+            exposure = 1.0
+            
+            # Handle NaN and infinite values
+            exr_image = np.nan_to_num(exr_image, nan=0.0, posinf=1.0, neginf=0.0)
+            
+            # Apply exposure adjustment
+            exr_image *= exposure
+            
+            # Clamp negative values and apply gamma correction
+            exr_image = np.clip(exr_image, 0, None)
+            exr_image = np.power(exr_image, gamma)
+            
+            # Simple tone mapping for very bright values
+            # Use a simple reinhard-like curve: x / (1 + x)
+            tone_mapped = exr_image / (1.0 + exr_image)
+            
+            # Handle any remaining NaN values
+            tone_mapped = np.nan_to_num(tone_mapped, nan=0.0, posinf=1.0, neginf=0.0)
+            
+            # Convert to 8-bit
+            ldr_image = np.clip(tone_mapped * 255, 0, 255).astype(np.uint8)
+            
+            # Convert to PIL Image
+            im = Image.fromarray(ldr_image, mode="RGB")
+            
+        except Exception as e:
+            logger.error("Couldn't render EXR thumbnail", filepath=filepath, error=type(e).__name__)
+            # Fallback to standard image handling if EXR-specific method fails
+            try:
+                im = Image.open(filepath)
+                if im.mode != "RGB" and im.mode != "RGBA":
+                    im = im.convert(mode="RGBA")
+                if im.mode == "RGBA":
+                    new_bg = Image.new("RGB", im.size, color="#1e1e1e")
+                    new_bg.paste(im, mask=im.getchannel(3))
+                    im = new_bg
+            except Exception:
+                im = None
+        return im
+
+    @staticmethod
+    def _image_thumb(filepath: Path) -> Image.Image | None:
         """Render a thumbnail for a standard image type.
 
         Args:
@@ -1080,49 +1249,115 @@ class ThumbRenderer(QObject):
             logger.error("Couldn't render thumbnail", filepath=filepath, error=type(e).__name__)
         return im
 
+    
+
+    @staticmethod
+    def _video_animated_thumb(
+        filepath: Path, save_to_file: Path | None = None
+    ) -> tuple[Image.Image | None, bytes | None]:
+        """Create an animated thumbnail for a video file.
+        
+        Args:
+            filepath (Path): The path of the video file.
+            save_to_file (Path): Optional path to save the animated WebP.
+            
+        Returns:
+            tuple: (first_frame_image, animated_webp_bytes)
+        """
+        frames: list[Image.Image] = []
+        try:
+            if is_readable_video(filepath):
+                video = cv2.VideoCapture(str(filepath), cv2.CAP_FFMPEG)
+                if video.get(cv2.CAP_PROP_FRAME_COUNT) <= 0:
+                    raise cv2.error("File is invalid or has 0 frames")
+                
+                # Get video properties
+                total_frames = int(video.get(cv2.CAP_PROP_FRAME_COUNT))
+                fps = video.get(cv2.CAP_PROP_FPS) or 30
+                duration = total_frames / fps
+                
+                # Calculate number of frames based on video duration (optimized for speed)
+                if duration < 10:
+                    num_frames = 2
+                elif duration < 60:
+                    num_frames = 3
+                else:
+                    num_frames = 3  # Maximum 3 frames for performance
+                
+                # Calculate frame positions - simplified for speed
+                if num_frames == 2:
+                    frame_positions = [total_frames // 4, 3 * total_frames // 4]
+                else:  # num_frames == 3
+                    frame_positions = [total_frames // 4, total_frames // 2, 3 * total_frames // 4]
+                
+                # Extract frames directly - simplified for speed
+                for frame_pos in frame_positions:
+                    video.set(cv2.CAP_PROP_POS_FRAMES, frame_pos)
+                    success, frame = video.read()
+                    
+                    if success and frame is not None:
+                        # Resize frame during extraction to save memory and processing time
+                        height, width = frame.shape[:2]
+                        if width > 640:  # Resize large frames
+                            scale = 640.0 / width
+                            new_width = 640
+                            new_height = int(height * scale)
+                            frame = cv2.resize(
+                                frame, (new_width, new_height), interpolation=cv2.INTER_LINEAR
+                            )
+                        
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        frame_img = Image.fromarray(frame_rgb)
+                        frames.append(frame_img)
+                
+                video.release()
+                
+                if len(frames) > 1:
+                    # Create animated WebP
+                    from io import BytesIO
+                    webp_buffer = BytesIO()
+                    
+                    frames[0].save(
+                        webp_buffer,
+                        format='WebP',
+                        save_all=True,
+                        append_images=frames[1:],
+                        duration=300,  # ms per frame (slower animation for less CPU usage)
+                        loop=0,
+                        quality=60,  # Lower quality for faster processing
+                        method=0  # Fastest compression method
+                    )
+                    
+                    animated_bytes = webp_buffer.getvalue()
+                    
+                    # Save animated WebP to file if requested
+                    if save_to_file:
+                        with open(save_to_file, 'wb') as f:
+                            f.write(animated_bytes)
+                    
+                    return frames[0], animated_bytes
+                    
+                elif len(frames) == 1:
+                    return frames[0], None
+                    
+        except Exception as e:
+            logger.error(
+                "Couldn't create animated video thumbnail",
+                filepath=filepath,
+                error=type(e).__name__,
+            )
+        
+        return None, None
+
     @staticmethod
     def _video_thumb(filepath: Path) -> Image.Image | None:
-        """Render a thumbnail for a video file.
+        """Render a thumbnail for a video file (fallback to first frame).
 
         Args:
             filepath (Path): The path of the file.
         """
-        im: Image.Image | None = None
-        frame: MatLike | None = None
-        try:
-            if is_readable_video(filepath):
-                video = cv2.VideoCapture(str(filepath), cv2.CAP_FFMPEG)
-                # TODO: Move this check to is_readable_video()
-                if video.get(cv2.CAP_PROP_FRAME_COUNT) <= 0:
-                    raise cv2.error("File is invalid or has 0 frames")
-                video.set(
-                    cv2.CAP_PROP_POS_FRAMES,
-                    (video.get(cv2.CAP_PROP_FRAME_COUNT) // 2),
-                )
-                # NOTE: Depending on the video format, compression, and
-                # frame count, seeking halfway does not work and the thumb
-                # must be pulled from the earliest available frame.
-                max_frame_seek: int = 10
-                for i in range(
-                    0,
-                    min(max_frame_seek, math.floor(video.get(cv2.CAP_PROP_FRAME_COUNT))),
-                ):
-                    success, frame = video.read()
-                    if not success:
-                        video.set(cv2.CAP_PROP_POS_FRAMES, i)
-                    else:
-                        break
-                if frame is not None:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    im = Image.fromarray(frame)
-        except (
-            UnidentifiedImageError,
-            cv2.error,
-            DecompressionBombError,
-            OSError,
-        ) as e:
-            logger.error("Couldn't render thumbnail", filepath=filepath, error=type(e).__name__)
-        return im
+        first_frame, _ = ThumbRenderer._video_animated_thumb(filepath)
+        return first_frame
 
     def render(
         self,
@@ -1155,6 +1390,10 @@ class ThumbRenderer(QObject):
         )
         if isinstance(filepath, str):
             filepath = Path(filepath)
+
+        # Track animated thumbnails
+        is_animated_thumb = False
+        animated_thumb_path = ""
 
         def render_default(size: tuple[int, int], pixel_ratio: float) -> Image.Image:
             im = self._get_icon(
@@ -1199,7 +1438,7 @@ class ThumbRenderer(QObject):
                         error=e,
                     )
                     # If the cached thumbnail failed, try rendering a new one
-                    image = self._render(
+                    image, _, _ = self._render(
                         timestamp,
                         filepath,
                         (ThumbRenderer.cached_img_res, ThumbRenderer.cached_img_res),
@@ -1242,11 +1481,41 @@ class ThumbRenderer(QObject):
                     if image:
                         ThumbRenderer.last_cache_folder = folder
                         break
+            
+            # Even if we have a static cached thumbnail, check for animated version for videos
+            if image and MediaCategories.is_ext_in_category(
+                filepath.suffix.lower(), MediaCategories.VIDEO_TYPES, mime_fallback=True
+            ):
+                try:
+                    # Check for animated thumbnail with same hash
+                    potential_animated = None
+                    
+                    # Check main cache directory first
+                    main_cache_dir = self.lib.library_dir / TS_FOLDER_NAME / THUMB_CACHE_NAME
+                    potential_animated_main = main_cache_dir / f"animated_{hash_value}.webp"
+                    if potential_animated_main.exists():
+                        potential_animated = potential_animated_main
+                    else:
+                        # Check subdirectories as fallback
+                        for cache_folder in [ThumbRenderer.last_cache_folder] + thumb_folders:
+                            if cache_folder and cache_folder.is_dir():
+                                potential_animated_sub = (
+                                    cache_folder / f"animated_{hash_value}.webp"
+                                )
+                                if potential_animated_sub.exists():
+                                    potential_animated = potential_animated_sub
+                                    break
+                    
+                    if potential_animated:
+                        is_animated_thumb = True
+                        animated_thumb_path = str(potential_animated)
+                except Exception:
+                    pass
             if not image:
                 # Render from file, return result, and try to save a cached version.
                 # TODO: Audio waveforms are dynamically sized based on the base_size, so hardcoding
                 # the resolution breaks that.
-                image = self._render(
+                image, is_animated_thumb, animated_thumb_path = self._render(
                     timestamp,
                     filepath,
                     (ThumbRenderer.cached_img_res, ThumbRenderer.cached_img_res),
@@ -1286,7 +1555,9 @@ class ThumbRenderer(QObject):
 
         # A full preview image (never cached)
         elif not is_grid_thumb:
-            image = self._render(timestamp, filepath, base_size, pixel_ratio)
+            image, is_animated_thumb, animated_thumb_path = self._render(
+                timestamp, filepath, base_size, pixel_ratio
+            )
             if not image:
                 image = (
                     render_unlinked((512, 512), 2)
@@ -1317,6 +1588,8 @@ class ThumbRenderer(QObject):
                     math.ceil(image.size[1] / pixel_ratio),
                 ),
                 filepath,
+                is_animated_thumb,
+                animated_thumb_path,
             )
         else:
             self.updated.emit(
@@ -1324,6 +1597,8 @@ class ThumbRenderer(QObject):
                 QPixmap(),
                 QSize(*base_size),
                 filepath,
+                False,
+                "",
             )
 
     def _render(
@@ -1334,7 +1609,7 @@ class ThumbRenderer(QObject):
         pixel_ratio: float,
         is_grid_thumb: bool = False,
         save_to_file: Path | None = None,
-    ) -> Image.Image | None:
+    ) -> tuple[Image.Image | None, bool, str]:
         """Render a thumbnail or preview image.
 
         Args:
@@ -1349,6 +1624,8 @@ class ThumbRenderer(QObject):
         """
         adj_size = math.ceil(max(base_size[0], base_size[1]) * pixel_ratio)
         image: Image.Image | None = None
+        is_animated_thumb = False
+        animated_thumb_path = ""
         _filepath: Path = Path(filepath)
         savable_media_type: bool = True
 
@@ -1362,8 +1639,49 @@ class ThumbRenderer(QObject):
                 if MediaCategories.is_ext_in_category(
                     ext, MediaCategories.IMAGE_TYPES, mime_fallback=True
                 ):
+                    # Animated Images ------------------------------------------
+                    if ext in {".gif", ".webp", ".apng"}:
+                        image, animated_bytes = self._image_animated_thumb(_filepath)
+                        # If we have animated bytes, try to save them for display
+                        if animated_bytes:
+                            try:
+                                # Generate a unique filename for the animated thumbnail
+                                hash_value = self._get_hash_string(_filepath)
+                                
+                                # Save to cache directory
+                                if self.lib.library_dir:
+                                    cache_dir = (
+                                        self.lib.library_dir / TS_FOLDER_NAME / THUMB_CACHE_NAME
+                                    )
+                                    cache_dir.mkdir(parents=True, exist_ok=True)
+                                    final_path = cache_dir / f"animated_{hash_value}.webp"
+                                    
+                                    # Only save if it doesn't exist or is older
+                                    should_save = (
+                                        not final_path.exists()
+                                        or (save_to_file and savable_media_type)
+                                    )
+                                    if should_save:
+                                        with open(final_path, 'wb') as f:
+                                            f.write(animated_bytes)
+                                        logger.debug(
+                                            "Saved animated image thumbnail", path=final_path
+                                        )
+                                    
+                                    # Mark as animated thumbnail
+                                    is_animated_thumb = True
+                                    animated_thumb_path = str(final_path)
+                            except Exception as e:
+                                logger.error("Failed to save animated thumbnail", error=e)
+                        
+                        # If saving static thumbnail is also requested, don't save again
+                        if save_to_file and savable_media_type:
+                            savable_media_type = False
+                    # EXR Images -----------------------------------------------
+                    if ext == ".exr":
+                        image = self._image_exr_thumb(_filepath)
                     # Raw Images -----------------------------------------------
-                    if MediaCategories.is_ext_in_category(
+                    elif MediaCategories.is_ext_in_category(
                         ext, MediaCategories.IMAGE_RAW_TYPES, mime_fallback=True
                     ):
                         image = self._image_raw_thumb(_filepath)
@@ -1379,7 +1697,83 @@ class ThumbRenderer(QObject):
                 elif MediaCategories.is_ext_in_category(
                     ext, MediaCategories.VIDEO_TYPES, mime_fallback=True
                 ):
-                    image = self._video_thumb(_filepath)
+                    # Check if animated thumbnail already exists first
+                    hash_value = self._get_hash_string(_filepath)
+                    
+                    # Look for existing animated thumbnail
+                    existing_animated_path = None
+                    try:
+                        # Check main cache directory first
+                        main_cache_dir = self.lib.library_dir / TS_FOLDER_NAME / THUMB_CACHE_NAME
+                        potential_animated = main_cache_dir / f"animated_{hash_value}.webp"
+                        if potential_animated.exists():
+                            existing_animated_path = potential_animated
+                        else:
+                            # Check subdirectories as fallback
+                            for cache_folder in main_cache_dir.glob("*"):
+                                if cache_folder.is_dir():
+                                    potential_animated = (
+                                        cache_folder / f"animated_{hash_value}.webp"
+                                    )
+                                    if potential_animated.exists():
+                                        existing_animated_path = potential_animated
+                                        break
+                    except Exception:
+                        pass
+                    
+                    if existing_animated_path:
+                        # Use existing animated thumbnail
+                        # Still need to get a static frame for the pixmap
+                        first_frame = self._video_thumb(_filepath)
+                        if first_frame:
+                            image = first_frame
+                            is_animated_thumb = True
+                            animated_thumb_path = str(existing_animated_path)
+                    else:
+                        # Create new animated thumbnail
+                        first_frame, animated_bytes = self._video_animated_thumb(_filepath)
+                        
+                        if first_frame:
+                            image = first_frame
+                            
+                            # If we have animated bytes, try to save them for display
+                            if animated_bytes:
+                                try:
+                                    # Generate a unique filename for the animated thumbnail
+                                    hash_value = self._get_hash_string(_filepath)
+                                    
+                                    # Save to cache directory
+                                    if self.lib.library_dir:
+                                        cache_dir = (
+                                        self.lib.library_dir / TS_FOLDER_NAME / THUMB_CACHE_NAME
+                                    )
+                                        cache_dir.mkdir(parents=True, exist_ok=True)
+                                        final_path = cache_dir / f"animated_{hash_value}.webp"
+                                        
+                                        # Only save if it doesn't exist or is older
+                                        should_save = (
+                                        not final_path.exists()
+                                        or (save_to_file and savable_media_type)
+                                    )
+                                    if should_save:
+                                        with open(final_path, 'wb') as f:
+                                            f.write(animated_bytes)
+                                        logger.debug(
+                                            "Saved animated video thumbnail", path=final_path
+                                        )
+                                    
+                                    # Mark as animated thumbnail
+                                    is_animated_thumb = True
+                                    animated_thumb_path = str(final_path)
+                                except Exception as e:
+                                    logger.error("Failed to save animated thumbnail", error=e)
+                        
+                            # If saving static thumbnail is also requested, don't save again
+                            if save_to_file and savable_media_type:
+                                savable_media_type = False
+                        else:
+                            # Fallback to static thumbnail if animated generation failed
+                            image = self._video_thumb(_filepath)
                 # PowerPoint Slideshow
                 elif ext in {".pptx"}:
                     image = self._powerpoint_thumb(_filepath)
@@ -1464,7 +1858,7 @@ class ThumbRenderer(QObject):
             except NoRendererError:
                 image = None
 
-        return image
+        return image, is_animated_thumb, animated_thumb_path
 
     def _resize_image(self, image: Image.Image, size: tuple[int, int]) -> Image.Image:
         orig_x, orig_y = image.size

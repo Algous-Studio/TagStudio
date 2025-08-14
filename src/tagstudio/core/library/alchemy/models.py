@@ -233,7 +233,8 @@ class Entry(Base):
     ) -> None:
         self.path = path
         self.folder = folder
-        self.id = id
+        if id is not None:
+            self.id = id
         self.filename = path.name
         self.suffix = path.suffix.lstrip(".").lower()
 
