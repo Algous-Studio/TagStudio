@@ -32,7 +32,7 @@ from tagstudio.core.constants import (
 from tagstudio.core.enums import LibraryPrefs
 from tagstudio.core.library.alchemy import default_color_groups
 from tagstudio.core.library.alchemy.joins import TagParent
-from tagstudio.core.library.alchemy.library import Library as SqliteLibrary
+from tagstudio.core.library.alchemy.library import Library as PostgresLibrary
 from tagstudio.core.library.alchemy.models import Entry, TagAlias
 from tagstudio.core.library.json.library import Library as JsonLibrary
 from tagstudio.core.library.json.library import Tag as JsonTag
@@ -48,7 +48,7 @@ logger = structlog.get_logger(__name__)
 
 
 class JsonMigrationModal(QObject):
-    """A modal for data migration from v9.4 JSON to v9.5+ SQLite."""
+    """A modal for data migration from v9.4 JSON to v9.5+ PostgreSQL."""
 
     migration_cancelled = Signal()
     migration_finished = Signal()
@@ -60,7 +60,7 @@ class JsonMigrationModal(QObject):
 
         self.stack: list[PagedPanelState] = []
         self.json_lib: JsonLibrary = None
-        self.sql_lib: SqliteLibrary = None
+        self.sql_lib: PostgresLibrary = None
         self.is_migration_initialized: bool = False
         self.discrepancies: list[str] = []
 
@@ -318,7 +318,7 @@ class JsonMigrationModal(QObject):
         )
 
     def migrate(self, skip_ui: bool = False):
-        """Open and migrate the JSON library to SQLite."""
+        """Open and migrate the JSON library to PostgreSQL."""
         if not self.is_migration_initialized:
             self.paged_panel.update_frame()
             self.paged_panel.update()
@@ -433,7 +433,6 @@ class JsonMigrationModal(QObject):
             QApplication.beep()
             QApplication.alert(self.paged_panel)
             self.done = True
-
         except Exception as e:
             traceback.print_stack()
             logger.error("[MigrationModal] Error:", error=e)
@@ -441,7 +440,6 @@ class JsonMigrationModal(QObject):
             QApplication.beep()
             QApplication.alert(self.paged_panel)
             self.done = True
-
     def update_parity_ui(self):
         """Update all parity values UI."""
         self.update_parity_value(self.fields_row, self.field_parity)

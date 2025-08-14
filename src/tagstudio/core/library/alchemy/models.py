@@ -203,6 +203,7 @@ class Entry(Base):
         back_populates="entry",
         cascade="all, delete",
     )
+    is_sequence: Mapped[bool] = mapped_column(nullable=False, default=False)
 
     @property
     def fields(self) -> list[BaseField]:

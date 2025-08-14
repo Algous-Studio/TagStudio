@@ -207,7 +207,9 @@ class QtDriver(DriverMixin, QObject):
         self.thumb_threads: list[Consumer] = []
         self.thumb_cutoff: float = time.time()
         self.selected: list[int] = []  # Selected Entry IDs
-
+        # Frame counts for items on the current page (used for sequences)
+        self.frame_counts: list[int | None] = []
+        
         self.SIGTERM.connect(self.handle_sigterm)
 
         self.global_settings_path = DEFAULT_GLOBAL_SETTINGS_PATH
@@ -1414,13 +1416,10 @@ class QtDriver(DriverMixin, QObject):
             self.thumb_job_queue.not_full.notify_all()
             # Stops in-progress jobs from finishing
             ItemThumb.update_cutoff = time.time()
-
         ratio: float = self.main_window.devicePixelRatio()
         base_size: tuple[int, int] = (self.main_window.thumb_size, self.main_window.thumb_size)
-
         self.main_window.thumb_layout.update()
         self.main_window.update()
-
         is_grid_thumb = True
         logger.info("[QtDriver] Loading Entries...")
         # TODO: The full entries with joins don't need to be grabbed here.
@@ -1438,7 +1437,6 @@ class QtDriver(DriverMixin, QObject):
                 continue
             if not entry:
                 continue
-
             with catch_warnings(record=True):
                 item_thumb.delete_action.triggered.disconnect()
 
@@ -1452,7 +1450,6 @@ class QtDriver(DriverMixin, QObject):
                     (sys.float_info.max, "", base_size, ratio, is_loading, is_grid_thumb),
                 )
             )
-
         # Show rendered thumbnails
         for index, item_thumb in enumerate(self.item_thumbs, start=0):
             entry = None
@@ -1463,7 +1460,6 @@ class QtDriver(DriverMixin, QObject):
                 continue
             if not entry:
                 continue
-
             is_loading = False
             self.thumb_job_queue.put(
                 (
@@ -1543,6 +1539,20 @@ class QtDriver(DriverMixin, QObject):
                 self.lib.remove_tags_from_entries(
                     pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
                 )
+    
+    def _expand_sequence_ids(self, ids: list[int]) -> list[int]:
+        """Expand sequence poster IDs to include their frame IDs."""
+        if not self.settings.group_sequences:
+            return list(ids)
+        expanded: list[int] = []
+        seen: set[int] = set()
+        seq_reg = self.lib.sequence_registry
+        for entry_id in ids:
+            for eid in seq_reg.ids_for_poster(entry_id):
+                if eid not in seen:
+                    expanded.append(eid)
+                    seen.add(eid)
+        return expanded
 
     def update_browsing_state(self, state: BrowsingState | None = None) -> None:
         """Navigates to a new BrowsingState when state is given, otherwise updates the results."""
@@ -1550,22 +1560,17 @@ class QtDriver(DriverMixin, QObject):
             logger.info("Library not loaded")
             return
         assert self.lib.engine
-
         if state:
             self.browsing_history.push(state)
-
         self.main_window.search_field.setText(self.browsing_history.current.query or "")
-
         # inform user about running search
         self.main_window.status_bar.showMessage(Translations["status.library_search_query"])
         self.main_window.status_bar.repaint()
-
         # search the library
         start_time = time.time()
         results = self.lib.search_library(self.browsing_history.current, self.settings.page_size)
         logger.info("items to render", count=len(results))
         end_time = time.time()
-
         # inform user about completed search
         self.main_window.status_bar.showMessage(
             Translations.format(

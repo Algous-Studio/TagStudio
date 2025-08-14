@@ -24,7 +24,7 @@ def cwd():
 def file_mediatypes_library():
     lib = Library()
 
-    status = lib.open_library(Path(""), ":memory:")
+    status = lib.open_library(Path(""))
     assert status.success
 
     entry1 = Entry(
@@ -74,7 +74,7 @@ def library(request, library_dir: Path):
             library_path = Path(request.param)
 
     lib = Library()
-    status = lib.open_library(library_path, ":memory:")
+    status = lib.open_library(library_path)
     assert status.success
 
     tag = Tag(
