@@ -43,19 +43,20 @@ def make_tables(engine: Engine) -> None:
     Base.metadata.create_all(engine)
 
     # tag IDs < 1000 are reserved
-    # create tag and delete it to bump the autoincrement sequence
-    # TODO - find a better way
-    # is this the better way?
     with engine.connect() as conn:
         try:
+            result = conn.execute(text("SELECT MAX(id) FROM tags"))
+            max_id = result.scalar() or 0
+
+            next_id = max(max_id + 1, RESERVED_TAG_END + 1)
+            
             conn.execute(
-                text(
-                    f"ALTER SEQUENCE tags_id_seq RESTART WITH {RESERVED_TAG_END + 1}"
-                )
+                text(f"ALTER SEQUENCE tags_id_seq RESTART WITH {next_id}")
             )
             conn.commit()
+            logger.info(f"[Library] Set tags sequence to start from {next_id}")
         except OperationalError as e:
-            logger.error("Could not initialize built-in tags", error=e)
+            logger.error("Could not initialize tag sequence", error=e)
             conn.rollback()
 
 
