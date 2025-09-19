@@ -69,6 +69,12 @@ from tagstudio.qt.helpers.vendored.pydub.audio_segment import (
 )
 from tagstudio.qt.resource_manager import ResourceManager
 
+# Import sequence registry for EXR sequence support
+try:
+    from tagstudio.core.utils.is_sequences import SequenceRegistry
+except ImportError:
+    SequenceRegistry = None
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 logger = structlog.get_logger(__name__)
@@ -102,6 +108,10 @@ class ThumbRenderer(QObject):
         self.lib = library
         ThumbRenderer.cache.set_library(self.lib)
 
+        # Initialize sequence registry for EXR sequences (lazy-loaded)
+        self.sequence_registry = None
+        self._sequence_registry_initialized = False
+
         # Cached thumbnail elements.
         # Key: Size + Pixel Ratio Tuple + Radius Scale
         #      (Ex. (512, 512, 1.25, 4))
@@ -111,11 +121,120 @@ class ThumbRenderer(QObject):
         # Key: ("name", UiColor, 512, 512, 1.25)
         self.icons: dict[tuple[str, UiColor, int, int, float], Image.Image] = {}
 
+    def _ensure_sequence_registry(self):
+        """Lazy-initialize the sequence registry when needed."""
+        if not self._sequence_registry_initialized:
+            self._sequence_registry_initialized = True
+            if SequenceRegistry and self.lib and self.lib.library_dir:
+                try:
+                    logger.info("Lazy-initializing sequence registry...")
+                    self.sequence_registry = SequenceRegistry(self.lib)
+                    self.sequence_registry.refresh_sequences()
+                    logger.info(f"ThumbRenderer sequence registry initialized with {len(self.sequence_registry.sequences)} sequences, {len(self.sequence_registry.entry_to_sequence)} entry mappings")
+                except Exception as e:
+                    logger.error("Could not initialize sequence registry", error=e, exc_info=True)
+                    self.sequence_registry = None
+            else:
+                logger.debug("SequenceRegistry not available: missing prerequisites")
+
     def _get_hash_string(self, filepath: Path) -> str:
         """Generate a hash string for cache lookups based on filepath and modification time."""
         mod_time = filepath.stat().st_mtime_ns if filepath.exists() else ""
         hashable_str = f"{str(filepath)}{mod_time}"
         return hashlib.shake_128(hashable_str.encode("utf-8")).hexdigest(8)
+
+    def _get_sequence_animated_thumb(self, filepath: Path) -> tuple[Path | None, bool]:
+        """Check if file is part of an EXR sequence and return animated thumbnail path.
+        
+        Args:
+            filepath (Path): The path of the EXR file to check.
+            
+        Returns:
+            tuple: (animated_thumb_path, is_sequence_member)
+        """
+        if not filepath.suffix.lower() == ".exr":
+            return None, False
+            
+        # Lazy-initialize sequence registry if needed
+        self._ensure_sequence_registry()
+        
+        if not self.sequence_registry:
+            return None, False
+            
+        logger.debug(f"Sequence registry has {len(self.sequence_registry.sequences)} sequences")
+        logger.debug(f"Entry to sequence mappings: {len(self.sequence_registry.entry_to_sequence)}")
+            
+        try:
+            # Find the entry for this file
+            entry = None
+            try:
+                # Find entry by searching through all entries using the relative path
+                relative_path = None
+                if self.lib.library_dir and filepath.is_absolute():
+                    try:
+                        relative_path = filepath.relative_to(self.lib.library_dir)
+                    except ValueError:
+                        relative_path = None
+                        
+                # Try different path matching approaches - start with filename first
+                target_paths = [filepath.name]  # Most likely match for TagStudio entries
+                if relative_path:
+                    target_paths.append(str(relative_path))
+                target_paths.append(str(filepath))
+                
+                # Search for the entry by path using the same approach as the sequence script
+                from sqlalchemy.orm import Session
+                for target_path in target_paths:
+                    try:
+                        with Session(self.lib.engine) as session:
+                            from tagstudio.core.library.alchemy.models import Entry
+                            entry = session.query(Entry).filter(Entry.path == target_path).first()
+                            if entry:
+                                logger.debug(f"Found entry by path '{target_path}': {entry.path} (ID: {entry.id})")
+                                break
+                    except Exception as e:
+                        logger.debug(f"Error searching for path '{target_path}': {e}")
+                        continue
+                        
+                if not entry:
+                    logger.debug(f"No entry found for filepath: {filepath}, tried paths: {target_paths}")
+                    
+            except Exception as e:
+                logger.debug(f"Exception finding entry: {e}")
+                return None, False
+            
+            if not entry:
+                return None, False
+                
+            # Check if this entry is part of a sequence
+            sequence = self.sequence_registry.entry_to_sequence.get(entry.id)
+            logger.debug(f"Entry ID {entry.id} sequence lookup result: {sequence is not None}")
+            if not sequence:
+                return None, False
+                
+            # Only return animated thumbnails for POSTER frames (is_sequence=False)
+            # Non-poster frames (is_sequence=True) should use static thumbnails
+            if entry.is_sequence:
+                logger.debug(f"Entry ID {entry.id} is a non-poster sequence frame, using static thumbnail")
+                return None, False
+                
+            # This is a poster frame - get the animated thumbnail path for this sequence
+            animated_thumb_path = self.sequence_registry.get_sequence_thumbnail_path(sequence)
+            logger.debug(f"Entry ID {entry.id} is a poster frame, returning animated thumbnail: {animated_thumb_path}")
+            return animated_thumb_path, True
+            
+        except Exception as e:
+            logger.debug("Failed to check sequence thumbnail", filepath=filepath, error=e)
+            return None, False
+
+    def refresh_sequences(self):
+        """Refresh the sequence registry to detect new or changed sequences."""
+        if self.sequence_registry:
+            try:
+                self.sequence_registry.refresh_sequences()
+                logger.debug("Refreshed sequence registry")
+            except Exception as e:
+                logger.warning("Failed to refresh sequence registry", error=e)
 
     def _get_resource_id(self, url: Path) -> str:
         """Return the name of the icon resource to use for a file type.
@@ -1679,7 +1798,36 @@ class ThumbRenderer(QObject):
                             savable_media_type = False
                     # EXR Images -----------------------------------------------
                     if ext == ".exr":
-                        image = self._image_exr_thumb(_filepath)
+                        logger.debug(f"Processing EXR file: {_filepath}")
+                        # Check if this EXR is part of a sequence with animated thumbnail
+                        sequence_animated_path, is_sequence = self._get_sequence_animated_thumb(_filepath)
+                        logger.debug(f"Sequence check result: is_sequence={is_sequence}, path={sequence_animated_path}")
+                        
+                        if is_sequence and sequence_animated_path and sequence_animated_path.exists():
+                            # This EXR is part of a sequence - use animated thumbnail
+                            logger.info(f"Using animated thumbnail for sequence: {sequence_animated_path}")
+                            try:
+                                # Still render a static frame for the pixmap
+                                image = self._image_exr_thumb(_filepath)
+                                
+                                if image:
+                                    # Mark as animated thumbnail
+                                    is_animated_thumb = True
+                                    animated_thumb_path = str(sequence_animated_path)
+                                    logger.info(f"Marked as animated thumbnail: {animated_thumb_path}")
+                                    
+                                    # Skip saving static thumbnail since we have animated one
+                                    if save_to_file and savable_media_type:
+                                        savable_media_type = False
+                                        
+                            except Exception as e:
+                                logger.warning("Failed to use sequence thumbnail, falling back to static", 
+                                             filepath=_filepath, error=e)
+                                image = self._image_exr_thumb(_filepath)
+                        else:
+                            # Regular EXR file or sequence without animated thumbnail
+                            logger.debug(f"Using static EXR thumbnail for: {_filepath}")
+                            image = self._image_exr_thumb(_filepath)
                     # Raw Images -----------------------------------------------
                     elif MediaCategories.is_ext_in_category(
                         ext, MediaCategories.IMAGE_RAW_TYPES, mime_fallback=True
@@ -1858,6 +2006,9 @@ class ThumbRenderer(QObject):
             except NoRendererError:
                 image = None
 
+        if is_animated_thumb:
+            logger.info(f"RETURNING ANIMATED THUMBNAIL: path={animated_thumb_path}, exists={Path(animated_thumb_path).exists() if animated_thumb_path else False}")
+        
         return image, is_animated_thumb, animated_thumb_path
 
     def _resize_image(self, image: Image.Image, size: tuple[int, int]) -> Image.Image:
