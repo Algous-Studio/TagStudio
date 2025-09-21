@@ -862,6 +862,104 @@ class ThumbRenderer(QObject):
         return im
 
     @staticmethod
+    def _image_exr_thumb(filepath: Path) -> Image.Image:
+        """Render a thumbnail for an EXR image with HDR tone mapping.
+
+        Args:
+            filepath (Path): The path of the file.
+        """
+        im: Image.Image = None
+        try:
+            # Use OpenEXR library directly for proper EXR handling
+            import OpenEXR
+            import Imath
+            
+            # Open EXR file
+            exr_file = OpenEXR.InputFile(str(filepath))
+            header = exr_file.header()
+            
+            # Get image dimensions
+            dw = header['dataWindow']
+            width = dw.max.x - dw.min.x + 1
+            height = dw.max.y - dw.min.y + 1
+            
+            # Get available channels
+            channels = header['channels']
+            
+            # Read RGB channels (fallback to available channels if RGB not present)
+            FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
+            
+            if 'R' in channels and 'G' in channels and 'B' in channels:
+                # RGB channels available
+                r_str = exr_file.channel('R', FLOAT)
+                g_str = exr_file.channel('G', FLOAT)
+                b_str = exr_file.channel('B', FLOAT)
+                
+                # Convert to numpy arrays
+                r = np.frombuffer(r_str, dtype=np.float32).reshape(height, width)
+                g = np.frombuffer(g_str, dtype=np.float32).reshape(height, width)
+                b = np.frombuffer(b_str, dtype=np.float32).reshape(height, width)
+                
+                # Stack channels
+                exr_image = np.stack([r, g, b], axis=2)
+            
+            elif 'Y' in channels:
+                # Luminance channel only
+                y_str = exr_file.channel('Y', FLOAT)
+                y = np.frombuffer(y_str, dtype=np.float32).reshape(height, width)
+                # Convert grayscale to RGB
+                exr_image = np.stack([y, y, y], axis=2)
+            
+            else:
+                # Use first available channel
+                channel_name = list(channels.keys())[0]
+                ch_str = exr_file.channel(channel_name, FLOAT)
+                ch = np.frombuffer(ch_str, dtype=np.float32).reshape(height, width)
+                exr_image = np.stack([ch, ch, ch], axis=2)
+            
+            # Apply tone mapping (simple gamma correction)
+            gamma = 1.0 / 2.2
+            exposure = 1.0
+            
+            # Handle NaN and infinite values
+            exr_image = np.nan_to_num(exr_image, nan=0.0, posinf=1.0, neginf=0.0)
+            
+            # Apply exposure adjustment
+            exr_image *= exposure
+            
+            # Clamp negative values and apply gamma correction
+            exr_image = np.clip(exr_image, 0, None)
+            exr_image = np.power(exr_image, gamma)
+            
+            # Simple tone mapping for very bright values
+            # Use a simple reinhard-like curve: x / (1 + x)
+            tone_mapped = exr_image / (1.0 + exr_image)
+            
+            # Handle any remaining NaN values
+            tone_mapped = np.nan_to_num(tone_mapped, nan=0.0, posinf=1.0, neginf=0.0)
+            
+            # Convert to 8-bit
+            ldr_image = np.clip(tone_mapped * 255, 0, 255).astype(np.uint8)
+            
+            # Convert to PIL Image
+            im = Image.fromarray(ldr_image, mode="RGB")
+            
+        except Exception as e:
+            logger.error("Couldn't render EXR thumbnail", filepath=filepath, error=type(e).__name__)
+            # Fallback to standard image handling if EXR-specific method fails
+            try:
+                im = Image.open(filepath)
+                if im.mode != "RGB" and im.mode != "RGBA":
+                    im = im.convert(mode="RGBA")
+                if im.mode == "RGBA":
+                    new_bg = Image.new("RGB", im.size, color="#1e1e1e")
+                    new_bg.paste(im, mask=im.getchannel(3))
+                    im = new_bg
+            except Exception:
+                im = None
+        return im
+
+    @staticmethod
     def _image_thumb(filepath: Path) -> Image.Image:
         """Render a thumbnail for a standard image type.
 
@@ -1362,8 +1460,11 @@ class ThumbRenderer(QObject):
                 if MediaCategories.is_ext_in_category(
                     ext, MediaCategories.IMAGE_TYPES, mime_fallback=True
                 ):
+                    # EXR Images -----------------------------------------------
+                    if ext == ".exr":
+                        image = self._image_exr_thumb(_filepath)
                     # Raw Images -----------------------------------------------
-                    if MediaCategories.is_ext_in_category(
+                    elif MediaCategories.is_ext_in_category(
                         ext, MediaCategories.IMAGE_RAW_TYPES, mime_fallback=True
                     ):
                         image = self._image_raw_thumb(_filepath)
