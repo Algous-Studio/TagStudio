@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, override
 import structlog
 from PIL import Image, ImageQt
 from PySide6.QtCore import QEvent, QMimeData, QSize, Qt, QUrl
-from PySide6.QtGui import QAction, QDrag, QEnterEvent, QGuiApplication, QMouseEvent, QPixmap
+from PySide6.QtGui import QAction, QDrag, QEnterEvent, QGuiApplication, QMouseEvent, QMovie, QPixmap
 from PySide6.QtWidgets import (
     QBoxLayout,
     QCheckBox,
@@ -203,8 +203,8 @@ class ItemThumb(FlowWidget):
         self.thumb_button = ThumbButton(self.thumb_container, thumb_size)
         self.renderer = ThumbRenderer(self.lib)
         self.renderer.updated.connect(
-            lambda timestamp, image, size, filename: (
-                self.update_thumb(image, timestamp),
+            lambda timestamp, image, size, filename, is_animated, animated_path: (
+                self.update_thumb(image, timestamp, Path(animated_path) if animated_path else None),
                 self.update_size(size, timestamp),
                 self.set_filename_text(filename, timestamp),
                 self.set_extension(filename, timestamp),
@@ -213,6 +213,10 @@ class ItemThumb(FlowWidget):
         self.thumb_button.setFlat(True)
         self.thumb_button.setLayout(self.thumb_layout)
         self.thumb_button.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+
+        # Animated thumbnail support
+        self.movie: QMovie | None = None
+        self.is_animated: bool = False
 
         self.opener = FileOpenerHelper("")
         open_file_action = QAction(Translations["file.open_file"], self)
@@ -436,12 +440,82 @@ class ItemThumb(FlowWidget):
             self.setFixedHeight(self.thumb_size[1])
         self.show_filename_label = set_visible
 
-    def update_thumb(self, image: QPixmap | None = None, timestamp: float | None = None):
+    def update_thumb(
+        self,
+        image: QPixmap | None = None,
+        timestamp: float | None = None,
+        animated_path: Path | None = None,
+    ):
         """Update attributes of a thumbnail element."""
         if timestamp and timestamp < ItemThumb.update_cutoff:
             return
 
-        self.thumb_button.setIcon(image if image else QPixmap())
+        # Check if this is an animated thumbnail
+        if animated_path and animated_path.exists():
+            self.set_animated_thumb(animated_path)
+        else:
+            # Set static thumbnail and stop any animation
+            self.set_static_thumb(image if image else QPixmap())
+
+    def set_static_thumb(self, image: QPixmap):
+        """Set a static thumbnail image."""
+        if self.movie:
+            self.movie.stop()
+            self.movie = None
+        self.is_animated = False
+        self.thumb_button.setIcon(image)
+
+    def set_animated_thumb(self, animated_path: Path):
+        """Set an animated thumbnail from file path."""
+        try:
+            # Clean up previous movie if it exists
+            if self.movie:
+                self.movie.stop()
+                self.movie = None
+
+            # Create new QMovie for the animated WebP
+            self.movie = QMovie(str(animated_path))
+            
+            if self.movie.isValid():
+                # Get the actual dimensions of the WebP file
+                try:
+                    from PIL import Image as PILImage
+                    with PILImage.open(animated_path) as pil_img:
+                        original_width, original_height = pil_img.size
+                        
+                        # Calculate aspect-ratio preserving size
+                        thumb_width, thumb_height = self.thumb_size
+                        scale_width = thumb_width / original_width
+                        scale_height = thumb_height / original_height
+                        # Use smaller scale to fit within bounds
+                        scale = min(scale_width, scale_height)
+                        
+                        scaled_width = int(original_width * scale)
+                        scaled_height = int(original_height * scale)
+                        
+                        self.movie.setScaledSize(QSize(scaled_width, scaled_height))
+                except Exception:
+                    # Fallback to original behavior if size cannot be determined
+                    self.movie.setScaledSize(QSize(*self.thumb_size))
+                
+                # Connect movie frames to update the button icon
+                self.movie.frameChanged.connect(self._update_animated_frame)
+                self.movie.start()
+                self.is_animated = True
+            else:
+                # Fallback to static if movie is invalid
+                logger.warning("Invalid animated thumbnail", path=animated_path)
+                self.set_static_thumb(QPixmap())
+        except Exception as e:
+            logger.error("Failed to set animated thumbnail", path=animated_path, error=e)
+            self.set_static_thumb(QPixmap())
+
+    def _update_animated_frame(self):
+        """Update the button icon with the current movie frame."""
+        if self.movie and self.movie.isValid():
+            current_pixmap = self.movie.currentPixmap()
+            if current_pixmap:
+                self.thumb_button.setIcon(current_pixmap)
 
     def update_size(self, size: QSize, timestamp: float | None = None):
         """Updates attributes of a thumbnail element.
