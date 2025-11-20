@@ -399,11 +399,11 @@ class Library:
         with Session(self.engine) as session:
             if not is_new:
                 db_result = session.scalar(
-                    select(Preferences).where(Preferences.key == LibraryPrefs.DB_VERSION.name)
+                    select(Preferences).where(Preferences.key == DB_VERSION_LEGACY_KEY)
                 )
                 if db_result:
                     db_version = db_result.value
-                if db_version < 6 or db_version > LibraryPrefs.DB_VERSION.default:
+                if db_version < 6 or db_version > DB_VERSION:
                     mismatch_text = Translations["status.library_version_mismatch"]
                     found_text = Translations["status.library_version_found"]
                     expected_text = Translations["status.library_version_expected"]
@@ -412,7 +412,7 @@ class Library:
                         message=(
                             f"{mismatch_text}\n"
                             f"{found_text} v{db_version}, "
-                            f"{expected_text} v{LibraryPrefs.DB_VERSION.default}"
+                            f"{expected_text} v{DB_VERSION}"
                         ),
                     )
 
@@ -486,24 +486,42 @@ class Library:
                 session.commit()
                 self.folder = folder
 
+            # Generate default .ts_ignore file
+            if is_new:
+                try:
+                    ts_ignore_template = (
+                        Path(__file__).parents[3] / "resources/templates/ts_ignore_template.txt"
+                    )
+                    shutil.copy2(ts_ignore_template, library_dir / TS_FOLDER_NAME / IGNORE_NAME)
+                except Exception as e:
+                    logger.error("[ERROR][Library] Could not generate '.ts_ignore' file!", error=e)
+
             if not is_new:
-                if LibraryPrefs.DB_VERSION.default != db_version:
+                if DB_VERSION != db_version:
                     self.library_dir = library_dir
                     self.save_library_backup_to_disk()
                     self.library_dir = None
-                if db_version < 8:
-                    self.apply_db8_schema_changes(session)
-                if db_version < 9:
-                    self.apply_db9_schema_changes(session)
-                if db_version == 6:
-                    self.apply_repairs_for_db6(session)
-                if db_version >= 6 and db_version < 8:
-                    self.apply_db8_default_data(session)
-                if db_version < 9:
-                    self.apply_db9_filename_population(session)
 
-            if LibraryPrefs.DB_VERSION.default > db_version:
-                self.set_prefs(LibraryPrefs.DB_VERSION, LibraryPrefs.DB_VERSION.default)
+                # NOTE: Depending on the data, some data and schema changes need to be applied in
+                # different orders. This chain of methods can likely be cleaned up and/or moved.
+                if db_version < 8:
+                    self.__apply_db8_schema_changes(session)
+                if db_version < 9:
+                    self.__apply_db9_schema_changes(session)
+                if db_version == 6:
+                    self.__apply_repairs_for_db6(session)
+
+                if db_version >= 6 and db_version < 8:
+                    self.__apply_db8_default_data(session)
+                if db_version < 9:
+                    self.__apply_db9_filename_population(session)
+                if db_version < 100:
+                    self.__apply_db100_parent_repairs(session)
+                if db_version < 102:
+                    self.__apply_db102_repairs(session)
+
+            if DB_VERSION > db_version:
+                self.set_prefs(DB_VERSION_LEGACY_KEY, DB_VERSION)
 
         self.library_dir = library_dir
         return LibraryStatus(success=True, library_path=library_dir)
