@@ -1171,6 +1171,9 @@ class Library:
                 )
             statement = statement.distinct(Entry.id)
 
+            # Filter out sequence frames, only show poster frames
+            statement = statement.where(Entry.is_sequence.is_(False))
+
             sort_on: ColumnExpressionArgument = Entry.id
             match search.sorting_mode:
                 case SortingModeEnum.DATE_ADDED:
