@@ -45,54 +45,61 @@ from PySide6.QtWidgets import (
     QScrollArea,
 )
 
-# this import has side-effect of import PySide resources
 import tagstudio.qt.resources_rc  # noqa: F401
 from tagstudio.core.constants import TAG_ARCHIVED, TAG_FAVORITE, VERSION, VERSION_BRANCH
 from tagstudio.core.driver import DriverMixin
 from tagstudio.core.enums import MacroID, SettingItems, ShowFilepathOption
-from tagstudio.core.global_settings import DEFAULT_GLOBAL_SETTINGS_PATH, GlobalSettings, Theme
 from tagstudio.core.library.alchemy.enums import (
     BrowsingState,
     FieldTypeEnum,
-    ItemType,
     SortingModeEnum,
 )
-from tagstudio.core.library.alchemy.fields import _FieldID
+from tagstudio.core.library.alchemy.fields import FieldID
 from tagstudio.core.library.alchemy.library import Library, LibraryStatus
 from tagstudio.core.library.alchemy.models import Entry
+from tagstudio.core.library.ignore import Ignore
+from tagstudio.core.library.refresh import RefreshTracker
 from tagstudio.core.media_types import MediaCategories
-from tagstudio.core.palette import ColorType, UiColor, get_ui_color
 from tagstudio.core.query_lang.util import ParsingError
 from tagstudio.core.ts_core import TagStudioCore
-from tagstudio.core.utils.refresh_dir import RefreshDirTracker
-from tagstudio.core.utils.web import strip_web_protocol
+from tagstudio.core.utils.str_formatting import strip_web_protocol
+from tagstudio.core.utils.types import unwrap
 from tagstudio.qt.cache_manager import CacheManager
-from tagstudio.qt.helpers.custom_runnable import CustomRunnable
-from tagstudio.qt.helpers.file_deleter import delete_file
-from tagstudio.qt.helpers.function_iterator import FunctionIterator
-from tagstudio.qt.helpers.vendored.ffmpeg import FFMPEG_CMD, FFPROBE_CMD
-from tagstudio.qt.main_window import MainWindow
-from tagstudio.qt.modals.about import AboutModal
-from tagstudio.qt.modals.build_tag import BuildTagPanel
-from tagstudio.qt.modals.drop_import import DropImportModal
-from tagstudio.qt.modals.ffmpeg_checker import FfmpegChecker
-from tagstudio.qt.modals.file_extension import FileExtensionModal
-from tagstudio.qt.modals.fix_dupes import FixDupeFilesModal
-from tagstudio.qt.modals.fix_unlinked import FixUnlinkedEntriesModal
-from tagstudio.qt.modals.folders_to_tags import FoldersToTagsModal
-from tagstudio.qt.modals.settings_panel import SettingsPanel
-from tagstudio.qt.modals.tag_color_manager import TagColorManager
-from tagstudio.qt.modals.tag_database import TagDatabasePanel
-from tagstudio.qt.modals.tag_search import TagSearchModal
+from tagstudio.qt.controllers.ffmpeg_missing_message_box import FfmpegMissingMessageBox
+
+# this import has side-effect of import PySide resources
+from tagstudio.qt.controllers.fix_ignored_modal_controller import FixIgnoredEntriesModal
+from tagstudio.qt.controllers.ignore_modal_controller import IgnoreModal
+from tagstudio.qt.controllers.library_info_window_controller import LibraryInfoWindow
+from tagstudio.qt.global_settings import (
+    DEFAULT_GLOBAL_SETTINGS_PATH,
+    GlobalSettings,
+    Theme,
+)
+from tagstudio.qt.mixed.about_modal import AboutModal
+from tagstudio.qt.mixed.build_tag import BuildTagPanel
+from tagstudio.qt.mixed.drop_import_modal import DropImportModal
+from tagstudio.qt.mixed.fix_dupe_files import FixDupeFilesModal
+from tagstudio.qt.mixed.fix_unlinked import FixUnlinkedEntriesModal
+from tagstudio.qt.mixed.folders_to_tags import FoldersToTagsModal
+from tagstudio.qt.mixed.item_thumb import BadgeType
+from tagstudio.qt.mixed.migration_modal import JsonMigrationModal
+from tagstudio.qt.mixed.progress_bar import ProgressWidget
+from tagstudio.qt.mixed.settings_panel import SettingsPanel
+from tagstudio.qt.mixed.tag_color_manager import TagColorManager
+from tagstudio.qt.mixed.tag_database import TagDatabasePanel
+from tagstudio.qt.mixed.tag_search import TagSearchModal
+from tagstudio.qt.models.palette import ColorType, UiColor, get_ui_color
 from tagstudio.qt.platform_strings import trash_term
+from tagstudio.qt.previews.vendored.ffmpeg import FFMPEG_CMD, FFPROBE_CMD
 from tagstudio.qt.resource_manager import ResourceManager
-from tagstudio.qt.splash import Splash
 from tagstudio.qt.translations import Translations
-from tagstudio.qt.widgets.item_thumb import BadgeType, ItemThumb
-from tagstudio.qt.widgets.migration_modal import JsonMigrationModal
-from tagstudio.qt.widgets.panel import PanelModal
-from tagstudio.qt.widgets.progress import ProgressWidget
-from tagstudio.qt.widgets.thumb_renderer import ThumbRenderer
+from tagstudio.qt.utils.custom_runnable import CustomRunnable
+from tagstudio.qt.utils.file_deleter import delete_file
+from tagstudio.qt.utils.function_iterator import FunctionIterator
+from tagstudio.qt.views.main_window import MainWindow
+from tagstudio.qt.views.panel_modal import PanelModal
+from tagstudio.qt.views.splash import SplashScreen
 
 BADGE_TAGS = {
     BadgeType.FAVORITE: TAG_FAVORITE,
@@ -172,16 +179,19 @@ class QtDriver(DriverMixin, QObject):
 
     tag_manager_panel: PanelModal | None = None
     color_manager_panel: TagColorManager | None = None
-    file_extension_panel: PanelModal | None = None
+    ignore_modal: PanelModal | None = None
     add_tag_modal: PanelModal | None = None
     folders_modal: FoldersToTagsModal
     about_modal: AboutModal
     unlinked_modal: FixUnlinkedEntriesModal
+    ignored_modal: FixIgnoredEntriesModal
     dupe_modal: FixDupeFilesModal
+    library_info_window: LibraryInfoWindow
 
     applied_theme: Theme
 
     lib: Library
+    cache_manager: CacheManager
 
     browsing_history: History[BrowsingState]
 
@@ -204,11 +214,7 @@ class QtDriver(DriverMixin, QObject):
         # self.buffer = {}
         self.thumb_job_queue: Queue = Queue()
         self.thumb_threads: list[Consumer] = []
-        self.thumb_cutoff: float = time.time()
-        self.selected: list[int] = []  # Selected Entry IDs
-        # Frame counts for items on the current page (used for sequences)
-        self.frame_counts: list[int | None] = []
-        
+
         self.SIGTERM.connect(self.handle_sigterm)
 
         self.global_settings_path = DEFAULT_GLOBAL_SETTINGS_PATH
@@ -246,23 +252,9 @@ class QtDriver(DriverMixin, QObject):
 
         Translations.change_language(self.settings.language)
 
-        # NOTE: This should be a per-library setting rather than an application setting.
-        thumb_cache_size_limit: int = int(
-            str(
-                self.cached_values.value(
-                    SettingItems.THUMB_CACHE_SIZE_LIMIT,
-                    defaultValue=CacheManager.size_limit,
-                    type=int,
-                )
-            )
-        )
-
-        CacheManager.size_limit = thumb_cache_size_limit
-        self.cached_values.setValue(SettingItems.THUMB_CACHE_SIZE_LIMIT, CacheManager.size_limit)
-        self.cached_values.sync()
-        logger.info(
-            f"[Config] Thumbnail cache size limit: {format_size(CacheManager.size_limit)}",
-        )
+    @property
+    def selected(self) -> list[int]:
+        return list(self.main_window.thumb_layout._selected.keys())
 
     def __reset_navigation(self) -> None:
         self.browsing_history = History(BrowsingState.show_all())
@@ -339,10 +331,10 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.dragMoveEvent = self.drag_move_event
         self.main_window.dropEvent = self.drop_event
 
-        self.splash: Splash = Splash(
+        self.splash: SplashScreen = SplashScreen(
             resource_manager=self.rm,
             screen_width=QGuiApplication.primaryScreen().geometry().width(),
-            splash_name="",  # TODO: Get splash name from config
+            splash_name=self.settings.splash,
             device_ratio=self.main_window.devicePixelRatio(),
         )
         self.splash.show()
@@ -365,9 +357,8 @@ class QtDriver(DriverMixin, QObject):
         self.tag_manager_panel = PanelModal(
             widget=TagDatabasePanel(self, self.lib),
             title=Translations["tag_manager.title"],
-            done_callback=lambda s=self.selected: self.main_window.preview_panel.set_selection(
-                s, update_preview=False
-            ),
+            done_callback=lambda checked=False,
+            s=self.selected: self.main_window.preview_panel.set_selection(s, update_preview=False),
             has_save=False,
         )
 
@@ -471,6 +462,13 @@ class QtDriver(DriverMixin, QObject):
 
         # region View Menu ============================================================
 
+        def create_library_info_window():
+            if not hasattr(self, "library_info_window"):
+                self.library_info_window = LibraryInfoWindow(self.lib, self)
+            self.library_info_window.show()
+
+        self.main_window.menu_bar.library_info_action.triggered.connect(create_library_info_window)
+
         def on_show_filenames_action(checked: bool):
             self.settings.show_filenames_in_grid = checked
             self.settings.save()
@@ -512,6 +510,15 @@ class QtDriver(DriverMixin, QObject):
             create_fix_unlinked_entries_modal
         )
 
+        def create_ignored_entries_modal():
+            if not hasattr(self, "ignored_modal"):
+                self.ignored_modal = FixIgnoredEntriesModal(self.lib, self)
+            self.ignored_modal.show()
+
+        self.main_window.menu_bar.fix_ignored_entries_action.triggered.connect(
+            create_ignored_entries_modal
+        )
+
         def create_dupe_files_modal():
             if not hasattr(self, "dupe_modal"):
                 self.dupe_modal = FixDupeFilesModal(self.lib, self)
@@ -521,7 +528,7 @@ class QtDriver(DriverMixin, QObject):
 
         # TODO: Move this to a settings screen.
         self.main_window.menu_bar.clear_thumb_cache_action.triggered.connect(
-            lambda: CacheManager.clear_cache(self.lib.library_dir)
+            lambda: self.cache_manager.clear_cache()
         )
 
         # endregion
@@ -567,8 +574,6 @@ class QtDriver(DriverMixin, QObject):
             str(Path(__file__).parents[1] / "resources/qt/fonts/Oxanium-Bold.ttf")
         )
 
-        self.item_thumbs: list[ItemThumb] = []
-        self.thumb_renderers: list[ThumbRenderer] = []
         self.init_library_window()
         self.migration_modal: JsonMigrationModal = None
 
@@ -583,7 +588,7 @@ class QtDriver(DriverMixin, QObject):
 
         # Check if FFmpeg or FFprobe are missing and show warning if so
         if not which(FFMPEG_CMD) or not which(FFPROBE_CMD):
-            FfmpegChecker().show()
+            FfmpegMissingMessageBox().show()
 
         self.app.exec()
         self.shutdown()
@@ -649,7 +654,6 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.thumb_size_combobox.currentIndexChanged.connect(
             lambda: self.thumb_size_callback(self.main_window.thumb_size_combobox.currentIndex())
         )
-        self._update_thumb_count()
 
         self.main_window.back_button.clicked.connect(lambda: self.navigation_callback(-1))
         self.main_window.forward_button.clicked.connect(lambda: self.navigation_callback(1))
@@ -665,30 +669,26 @@ class QtDriver(DriverMixin, QObject):
 
         self.splash.finish(self.main_window)
 
-    def init_file_extension_manager(self):
-        """Initialize the File Extension panel."""
-        if self.file_extension_panel:
+    def init_ignore_modal(self):
+        """Initialize the Ignore Files panel."""
+        if self.ignore_modal:
             with catch_warnings(record=True):
-                self.main_window.menu_bar.manage_file_ext_action.triggered.disconnect()
-                self.file_extension_panel.saved.disconnect()
-            self.file_extension_panel.deleteLater()
-            self.file_extension_panel = None
+                self.main_window.menu_bar.ignore_modal_action.triggered.disconnect()
+                self.ignore_modal.saved.disconnect()
+            self.ignore_modal.deleteLater()
+            self.ignore_modal = None
 
-        panel = FileExtensionModal(self.lib)
-        self.file_extension_panel = PanelModal(
+        panel = IgnoreModal(self.lib)
+        self.ignore_modal = PanelModal(
             panel,
-            Translations["ignore_list.title"],
+            Translations["menu.edit.ignore_files"],
             has_save=True,
         )
-        self.file_extension_panel.saved.connect(
-            lambda: (panel.save(), self.update_browsing_state())
-        )
-        self.main_window.menu_bar.manage_file_ext_action.triggered.connect(
-            self.file_extension_panel.show
-        )
+        self.ignore_modal.saved.connect(panel.save)
+        self.main_window.menu_bar.ignore_modal_action.triggered.connect(self.ignore_modal.show)
 
     def show_grid_filenames(self, value: bool):
-        for thumb in self.item_thumbs:
+        for thumb in self.main_window.thumb_layout._item_thumbs:
             thumb.set_filename_visibility(value)
 
     def call_if_library_open(self, func):
@@ -733,6 +733,7 @@ class QtDriver(DriverMixin, QObject):
         self.__reset_navigation()
 
         self.lib.close()
+        self.cache_manager = None
 
         self.thumb_job_queue.queue.clear()
         if is_shutdown:
@@ -741,15 +742,17 @@ class QtDriver(DriverMixin, QObject):
 
         self.main_window.setWindowTitle(self.base_title)
 
-        self.selected.clear()
         self.frame_content.clear()
-        [x.set_mode(None) for x in self.item_thumbs]
         if self.color_manager_panel:
             self.color_manager_panel.reset()
 
         self.set_clipboard_menu_viability()
         self.set_select_actions_visibility()
 
+        if hasattr(self, "library_info_window"):
+            self.library_info_window.close()
+
+        self.main_window.thumb_layout.set_entries([])
         self.main_window.preview_panel.set_selection(self.selected)
         self.main_window.toggle_landing_page(enabled=True)
         self.main_window.pagination.setHidden(True)
@@ -759,12 +762,14 @@ class QtDriver(DriverMixin, QObject):
             self.main_window.menu_bar.refresh_dir_action.setEnabled(False)
             self.main_window.menu_bar.tag_manager_action.setEnabled(False)
             self.main_window.menu_bar.color_manager_action.setEnabled(False)
-            self.main_window.menu_bar.manage_file_ext_action.setEnabled(False)
+            self.main_window.menu_bar.ignore_modal_action.setEnabled(False)
             self.main_window.menu_bar.new_tag_action.setEnabled(False)
             self.main_window.menu_bar.fix_unlinked_entries_action.setEnabled(False)
+            self.main_window.menu_bar.fix_ignored_entries_action.setEnabled(False)
             self.main_window.menu_bar.fix_dupe_files_action.setEnabled(False)
             self.main_window.menu_bar.clear_thumb_cache_action.setEnabled(False)
             self.main_window.menu_bar.folders_to_tags_action.setEnabled(False)
+            self.main_window.menu_bar.library_info_action.setEnabled(False)
         except AttributeError:
             logger.warning(
                 "[Library] Could not disable library management menu actions. Is this in a test?"
@@ -819,11 +824,7 @@ class QtDriver(DriverMixin, QObject):
 
     def select_all_action_callback(self):
         """Set the selection to all visible items."""
-        self.selected.clear()
-        for item in self.item_thumbs:
-            if item.mode and item.item_id not in self.selected and not item.isHidden():
-                self.selected.append(item.item_id)
-                item.thumb_button.set_selected(True)
+        self.main_window.thumb_layout.select_all()
 
         self.set_clipboard_menu_viability()
         self.set_select_actions_visibility()
@@ -832,17 +833,7 @@ class QtDriver(DriverMixin, QObject):
 
     def select_inverse_action_callback(self):
         """Invert the selection of all visible items."""
-        new_selected = []
-
-        for item in self.item_thumbs:
-            if item.mode and not item.isHidden():
-                if item.item_id in self.selected:
-                    item.thumb_button.set_selected(False)
-                else:
-                    item.thumb_button.set_selected(True)
-                    new_selected.append(item.item_id)
-
-        self.selected = new_selected
+        self.main_window.thumb_layout.select_inverse()
 
         self.set_clipboard_menu_viability()
         self.set_select_actions_visibility()
@@ -850,16 +841,16 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.preview_panel.set_selection(self.selected, update_preview=False)
 
     def clear_select_action_callback(self):
-        self.selected.clear()
-        self.set_select_actions_visibility()
-        for item in self.item_thumbs:
-            item.thumb_button.set_selected(False)
+        self.main_window.thumb_layout.clear_selected()
 
+        self.set_select_actions_visibility()
         self.set_clipboard_menu_viability()
         self.main_window.preview_panel.set_selection(self.selected)
 
     def add_tags_to_selected_callback(self, tag_ids: list[int]):
-        self.lib.add_tags_to_entries(self.selected, tag_ids)
+        selected = self.selected
+        self.main_window.thumb_layout.add_tags(selected, tag_ids)
+        self.lib.add_tags_to_entries(selected, tag_ids)
 
     def delete_files_callback(self, origin_path: str | Path, origin_id: int | None = None):
         """Callback to send on or more files to the system trash.
@@ -878,15 +869,17 @@ class QtDriver(DriverMixin, QObject):
         pending: list[tuple[int, Path]] = []
         deleted_count: int = 0
 
-        if len(self.selected) <= 1 and origin_path:
+        selected = self.selected
+
+        if len(selected) <= 1 and origin_path:
             origin_id_ = origin_id
             if not origin_id_:
                 with contextlib.suppress(IndexError):
-                    origin_id_ = self.selected[0]
+                    origin_id_ = selected[0]
 
             pending.append((origin_id_, Path(origin_path)))
-        elif (len(self.selected) > 1) or (len(self.selected) <= 1):
-            for item in self.selected:
+        elif (len(selected) > 1) or (len(selected) <= 1):
+            for item in selected:
                 entry = self.lib.get_entry(item)
                 filepath: Path = entry.path
                 pending.append((item, filepath))
@@ -912,25 +905,26 @@ class QtDriver(DriverMixin, QObject):
                         self.lib.remove_entries([e_id])
 
                         deleted_count += 1
-                self.selected.clear()
+                selected.clear()
+                self.clear_select_action_callback()
 
         if deleted_count > 0:
             self.update_browsing_state()
-            self.main_window.preview_panel.set_selection(self.selected)
+            self.main_window.preview_panel.set_selection(selected)
 
-        if len(self.selected) <= 1 and deleted_count == 0:
+        if len(selected) <= 1 and deleted_count == 0:
             self.main_window.status_bar.showMessage(Translations["status.deleted_none"])
-        elif len(self.selected) <= 1 and deleted_count == 1:
+        elif len(selected) <= 1 and deleted_count == 1:
             self.main_window.status_bar.showMessage(
                 Translations.format("status.deleted_file_plural", count=deleted_count)
             )
-        elif len(self.selected) > 1 and deleted_count == 0:
+        elif len(selected) > 1 and deleted_count == 0:
             self.main_window.status_bar.showMessage(Translations["status.deleted_none"])
-        elif len(self.selected) > 1 and deleted_count < len(self.selected):
+        elif len(selected) > 1 and deleted_count < len(selected):
             self.main_window.status_bar.showMessage(
                 Translations.format("status.deleted_partial_warning", count=deleted_count)
             )
-        elif len(self.selected) > 1 and deleted_count == len(self.selected):
+        elif len(selected) > 1 and deleted_count == len(selected):
             self.main_window.status_bar.showMessage(
                 Translations.format("status.deleted_file_plural", count=deleted_count)
             )
@@ -996,7 +990,7 @@ class QtDriver(DriverMixin, QObject):
 
     def add_new_files_callback(self):
         """Run when user initiates adding new files to the Library."""
-        tracker = RefreshDirTracker(self.lib)
+        tracker = RefreshTracker(self.lib)
 
         pw = ProgressWidget(
             cancel_button_text=None,
@@ -1005,10 +999,11 @@ class QtDriver(DriverMixin, QObject):
         )
         pw.setWindowTitle(Translations["library.refresh.title"])
         pw.update_label(Translations["library.refresh.scanning_preparing"])
-
         pw.show()
 
-        iterator = FunctionIterator(lambda: tracker.refresh_dir(self.lib.library_dir))
+        iterator = FunctionIterator(
+            lambda lib=unwrap(self.lib.library_dir): tracker.refresh_dir(lib)  # noqa: B008
+        )
         iterator.value.connect(
             lambda x: (
                 pw.update_progress(x + 1),
@@ -1033,7 +1028,7 @@ class QtDriver(DriverMixin, QObject):
         )
         QThreadPool.globalInstance().start(r)
 
-    def add_new_files_runnable(self, tracker: RefreshDirTracker):
+    def add_new_files_runnable(self, tracker: RefreshTracker):
         """Adds any known new files to the library and run default macros on them.
 
         Threaded method.
@@ -1053,7 +1048,7 @@ class QtDriver(DriverMixin, QObject):
         pw.show()
 
         iterator.value.connect(
-            lambda: (
+            lambda _count: (
                 pw.update_label(
                     Translations.format(
                         "entries.running.dialog.new_entries", total=f"{files_count:n}"
@@ -1119,7 +1114,7 @@ class QtDriver(DriverMixin, QObject):
         elif name == MacroID.BUILD_URL:
             url = TagStudioCore.build_url(entry, source)
             if url is not None:
-                self.lib.add_field_to_entry(entry.id, field_id=_FieldID.SOURCE, value=url)
+                self.lib.add_field_to_entry(entry.id, field_id=FieldID.SOURCE, value=url)
         elif name == MacroID.MATCH:
             TagStudioCore.match_conditions(self.lib, entry.id)
         elif name == MacroID.CLEAN_URL:
@@ -1150,7 +1145,7 @@ class QtDriver(DriverMixin, QObject):
 
         self.update_thumbs()
         blank_icon: QIcon = QIcon()
-        for it in self.item_thumbs:
+        for it in self.main_window.thumb_layout._item_thumbs:
             it.thumb_button.setIcon(blank_icon)
             it.resize(self.main_window.thumb_size, self.main_window.thumb_size)
             it.thumb_size = (self.main_window.thumb_size, self.main_window.thumb_size)
@@ -1193,25 +1188,6 @@ class QtDriver(DriverMixin, QObject):
         self.browsing_history.move(delta)
 
         self.update_browsing_state()
-
-    def remove_grid_item(self, grid_idx: int):
-        self.frame_content[grid_idx] = None
-        self.item_thumbs[grid_idx].hide()
-
-    def _update_thumb_count(self):
-        missing_count = max(0, self.settings.page_size - len(self.item_thumbs))
-        layout = self.main_window.thumb_layout
-        for _ in range(missing_count):
-            item_thumb = ItemThumb(
-                None,
-                self.lib,
-                self,
-                (self.main_window.thumb_size, self.main_window.thumb_size),
-                self.settings.show_filenames_in_grid,
-            )
-
-            layout.addWidget(item_thumb)
-            self.item_thumbs.append(item_thumb)
 
     def copy_fields_action_callback(self):
         if len(self.selected) > 0:
@@ -1259,58 +1235,13 @@ class QtDriver(DriverMixin, QObject):
                 Setting to True acts like "Shift + Click" selecting.
         """
         logger.info("[QtDriver] Selecting Items:", item_id=item_id, append=append, bridge=bridge)
-
         if append:
-            if item_id not in self.selected:
-                self.selected.append(item_id)
-                for it in self.item_thumbs:
-                    if it.item_id == item_id:
-                        it.thumb_button.set_selected(True)
-            else:
-                self.selected.remove(item_id)
-                for it in self.item_thumbs:
-                    if it.item_id == item_id:
-                        it.thumb_button.set_selected(False)
-
-        #  TODO: Allow bridge selecting across pages.
-        elif bridge and self.selected:
-            last_index = -1
-            current_index = -1
-            try:
-                contents = self.frame_content
-                last_index = self.frame_content.index(self.selected[-1])
-                current_index = self.frame_content.index(item_id)
-                index_range: list = contents[
-                    min(last_index, current_index) : max(last_index, current_index) + 1
-                ]
-
-                # Preserve bridge direction for correct appending order.
-                if last_index < current_index:
-                    index_range.reverse()
-                for entry_id in index_range:
-                    for it in self.item_thumbs:
-                        if it.item_id == entry_id:
-                            it.thumb_button.set_selected(True)
-                            if entry_id not in self.selected:
-                                self.selected.append(entry_id)
-            except Exception as e:
-                # TODO: Allow bridge selecting across pages.
-                logger.error(
-                    "[QtDriver] Previous selected item not on current page!",
-                    error=e,
-                    item_id=item_id,
-                    current_index=current_index,
-                    last_index=last_index,
-                )
-
+            self.main_window.thumb_layout.select_entry(item_id)
+        elif bridge:
+            self.main_window.thumb_layout.select_to_entry(item_id)
         else:
-            self.selected.clear()
-            self.selected.append(item_id)
-        for it in self.item_thumbs:
-            if it.item_id in self.selected:
-                it.thumb_button.set_selected(True)
-            else:
-                it.thumb_button.set_selected(False)
+            self.main_window.thumb_layout.clear_selected()
+            self.main_window.thumb_layout.select_entry(item_id)
 
         self.set_clipboard_menu_viability()
         self.set_select_actions_visibility()
@@ -1419,79 +1350,15 @@ class QtDriver(DriverMixin, QObject):
 
     def update_thumbs(self):
         """Update search thumbnails."""
-        self._update_thumb_count()
         with self.thumb_job_queue.mutex:
             # Cancels all thumb jobs waiting to be started
             self.thumb_job_queue.queue.clear()
             self.thumb_job_queue.all_tasks_done.notify_all()
             self.thumb_job_queue.not_full.notify_all()
-            # Stops in-progress jobs from finishing
-            ItemThumb.update_cutoff = time.time()
-        ratio: float = self.main_window.devicePixelRatio()
-        base_size: tuple[int, int] = (self.main_window.thumb_size, self.main_window.thumb_size)
+
+        self.main_window.thumb_layout.set_entries(self.frame_content)
         self.main_window.thumb_layout.update()
         self.main_window.update()
-        is_grid_thumb = True
-        logger.info("[QtDriver] Loading Entries...")
-        # TODO: The full entries with joins don't need to be grabbed here.
-        # Use a method that only selects the frame content but doesn't include the joins.
-        entries = self.lib.get_entries(self.frame_content)
-        tag_entries = self.lib.get_tag_entries([TAG_ARCHIVED, TAG_FAVORITE], self.frame_content)
-        logger.info("[QtDriver] Building Filenames...")
-        filenames: list[Path] = [self.lib.library_dir / e.path for e in entries]
-        logger.info("[QtDriver] Done! Processing ItemThumbs...")
-        for index, item_thumb in enumerate(self.item_thumbs, start=0):
-            entry = None
-            item_thumb.set_mode(None)
-
-            try:
-                entry = entries[index]
-            except IndexError:
-                item_thumb.hide()
-                continue
-            if not entry:
-                continue
-            with catch_warnings(record=True):
-                item_thumb.delete_action.triggered.disconnect()
-
-            item_thumb.set_mode(ItemType.ENTRY)
-            item_thumb.set_item_id(entry.id)
-            item_thumb.show()
-            is_loading = True
-            self.thumb_job_queue.put(
-                (
-                    item_thumb.renderer.render,
-                    (sys.float_info.max, "", base_size, ratio, is_loading, is_grid_thumb),
-                )
-            )
-        # Show rendered thumbnails
-        for index, item_thumb in enumerate(self.item_thumbs, start=0):
-            entry = None
-            try:
-                entry = entries[index]
-            except IndexError:
-                item_thumb.hide()
-                continue
-            if not entry:
-                continue
-            is_loading = False
-            self.thumb_job_queue.put(
-                (
-                    item_thumb.renderer.render,
-                    (time.time(), filenames[index], base_size, ratio, is_loading, is_grid_thumb),
-                )
-            )
-            item_thumb.assign_badge(BadgeType.ARCHIVED, entry.id in tag_entries[TAG_ARCHIVED])
-            item_thumb.assign_badge(BadgeType.FAVORITE, entry.id in tag_entries[TAG_FAVORITE])
-            item_thumb.delete_action.triggered.connect(
-                lambda checked=False, f=filenames[index], e_id=entry.id: self.delete_files_callback(
-                    f, e_id
-                )
-            )
-
-            # Restore Selected Borders
-            is_selected = item_thumb.item_id in self.selected
-            item_thumb.thumb_button.set_selected(is_selected)
 
     def update_badges(self, badge_values: dict[BadgeType, bool], origin_id: int, add_tags=True):
         """Update the tag badges for item_thumbs.
@@ -1513,7 +1380,7 @@ class QtDriver(DriverMixin, QObject):
             origin_id=origin_id,
             add_tags=add_tags,
         )
-        for it in self.item_thumbs:
+        for it in self.main_window.thumb_layout._item_thumbs:
             if it.item_id in item_ids:
                 for badge_type, value in badge_values.items():
                     if add_tags:
@@ -1531,35 +1398,22 @@ class QtDriver(DriverMixin, QObject):
             pending_entries=pending_entries,
         )
         for badge_type, value in badge_values.items():
+            entry_ids = pending_entries.get(badge_type, [])
+            tag_ids = [BADGE_TAGS[badge_type]]
+
             if value:
-                self.lib.add_tags_to_entries(
-                    pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
-                )
+                self.main_window.thumb_layout.add_tags(entry_ids, tag_ids)
+                self.lib.add_tags_to_entries(entry_ids, tag_ids)
             else:
-                self.lib.remove_tags_from_entries(
-                    pending_entries.get(badge_type, []), BADGE_TAGS[badge_type]
-                )
-    
-    def _expand_sequence_ids(self, ids: list[int]) -> list[int]:
-        """Expand sequence poster IDs to include their frame IDs."""
-        if not self.settings.group_sequences:
-            return list(ids)
-        expanded: list[int] = []
-        seen: set[int] = set()
-        seq_reg = self.lib.sequence_registry
-        for entry_id in ids:
-            for eid in seq_reg.ids_for_poster(entry_id):
-                if eid not in seen:
-                    expanded.append(eid)
-                    seen.add(eid)
-        return expanded
+                self.main_window.thumb_layout.remove_tags(entry_ids, tag_ids)
+                self.lib.remove_tags_from_entries(entry_ids, tag_ids)
 
     def update_browsing_state(self, state: BrowsingState | None = None) -> None:
         """Navigates to a new BrowsingState when state is given, otherwise updates the results."""
         if not self.lib.library_dir:
             logger.info("Library not loaded")
             return
-        assert self.lib.engine
+
         if state:
             self.browsing_history.push(state)
         self.main_window.search_field.setText(self.browsing_history.current.query or "")
@@ -1568,7 +1422,9 @@ class QtDriver(DriverMixin, QObject):
         self.main_window.status_bar.repaint()
         # search the library
         start_time = time.time()
-        results = self.lib.search_library(self.browsing_history.current, self.settings.page_size)
+        Ignore.get_patterns(self.lib.library_dir, include_global=True)
+        page_size = 0 if self.settings.infinite_scroll else self.settings.page_size
+        results = self.lib.search_library(self.browsing_history.current, page_size)
         logger.info("items to render", count=len(results))
         end_time = time.time()
         # inform user about completed search
@@ -1585,7 +1441,10 @@ class QtDriver(DriverMixin, QObject):
         self.update_thumbs()
 
         # update pagination
-        self.pages_count = math.ceil(results.total_count / self.settings.page_size)
+        if page_size > 0:
+            self.pages_count = math.ceil(results.total_count / page_size)
+        else:
+            self.pages_count = 1
         self.main_window.pagination.update_buttons(
             self.pages_count, self.browsing_history.current.page_index, emit=False
         )
@@ -1690,6 +1549,15 @@ class QtDriver(DriverMixin, QObject):
             open_status = LibraryStatus(
                 success=False, library_path=path, message=type(e).__name__, msg_description=str(e)
             )
+        self.cache_manager = CacheManager(
+            path,
+            max_size=self.settings.thumb_cache_size,
+            img_quality=self.settings.cached_thumb_quality,
+        )
+        cache_size = self.settings.thumb_cache_size * self.cache_manager.STAT_MULTIPLIER
+        logger.info(
+            f"[Config] Thumbnail Cache Size: {format_size(cache_size)}",
+        )
 
         # Migration is required
         if open_status.json_migration_req:
@@ -1711,8 +1579,9 @@ class QtDriver(DriverMixin, QObject):
             )
             return open_status
 
+        assert self.lib.library_dir
         self.init_workers()
-
+        Ignore.get_patterns(self.lib.library_dir, include_global=True)
         self.__reset_navigation()
 
         # TODO - make this call optional
@@ -1734,21 +1603,22 @@ class QtDriver(DriverMixin, QObject):
         )
         self.main_window.setAcceptDrops(True)
 
-        self.init_file_extension_manager()
+        self.init_ignore_modal()
 
-        self.selected.clear()
         self.set_select_actions_visibility()
         self.main_window.menu_bar.save_library_backup_action.setEnabled(True)
         self.main_window.menu_bar.close_library_action.setEnabled(True)
         self.main_window.menu_bar.refresh_dir_action.setEnabled(True)
         self.main_window.menu_bar.tag_manager_action.setEnabled(True)
         self.main_window.menu_bar.color_manager_action.setEnabled(True)
-        self.main_window.menu_bar.manage_file_ext_action.setEnabled(True)
+        self.main_window.menu_bar.ignore_modal_action.setEnabled(True)
         self.main_window.menu_bar.new_tag_action.setEnabled(True)
         self.main_window.menu_bar.fix_unlinked_entries_action.setEnabled(True)
+        self.main_window.menu_bar.fix_ignored_entries_action.setEnabled(True)
         self.main_window.menu_bar.fix_dupe_files_action.setEnabled(True)
         self.main_window.menu_bar.clear_thumb_cache_action.setEnabled(True)
         self.main_window.menu_bar.folders_to_tags_action.setEnabled(True)
+        self.main_window.menu_bar.library_info_action.setEnabled(True)
 
         self.main_window.preview_panel.set_selection(self.selected)
 
