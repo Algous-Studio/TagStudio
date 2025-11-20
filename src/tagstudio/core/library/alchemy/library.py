@@ -1169,7 +1169,8 @@ class Library:
                 logger.info(
                     f"SQL Expression Builder finished ({format_timespan(end_time - start_time)})"
                 )
-            statement = statement.distinct(Entry.id)
+            # Use distinct() without column specification to avoid PostgreSQL DISTINCT ON issues
+            statement = statement.distinct()
 
             # Filter out sequence frames, only show poster frames
             statement = statement.where(Entry.is_sequence.is_(False))
