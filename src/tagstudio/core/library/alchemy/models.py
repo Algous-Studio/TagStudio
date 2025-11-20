@@ -5,7 +5,7 @@
 from datetime import datetime as dt
 from pathlib import Path
 
-from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, Integer, event
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, Index, Integer, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from tagstudio.core.constants import TAG_ARCHIVED, TAG_FAVORITE
@@ -106,6 +106,9 @@ class Tag(Base):
     disambiguation_id: Mapped[int | None]
 
     __table_args__ = (
+        # Priority 1 index for tag name searches
+        Index('ix_tags_name', 'name'),  # Tag name searches and autocomplete
+        # Foreign key constraint
         ForeignKeyConstraint(
             [color_namespace, color_slug], [TagColorGroup.namespace, TagColorGroup.slug]
         ),
@@ -204,6 +207,16 @@ class Entry(Base):
         cascade="all, delete",
     )
     is_sequence: Mapped[bool] = mapped_column(nullable=False, default=False)
+
+    # Priority 1 indexes for 10M file scale
+    __table_args__ = (
+        # Individual column indexes
+        Index('ix_entries_folder_id', 'folder_id'),  # Folder-based queries
+        Index('ix_entries_suffix', 'suffix'),  # File type filtering (filetype:jpg)
+        Index('ix_entries_is_sequence', 'is_sequence'),  # Filter sequence frames
+        # Composite index for common query pattern
+        Index('ix_entries_folder_sequence', 'folder_id', 'is_sequence'),  # WHERE folder_id = X AND is_sequence = FALSE
+    )
 
     @property
     def fields(self) -> list[BaseField]:

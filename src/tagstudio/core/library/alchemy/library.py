@@ -60,6 +60,7 @@ from tagstudio.core.constants import (
 from tagstudio.core.enums import LibraryPrefs
 from tagstudio.core.library.alchemy import default_color_groups
 from tagstudio.core.library.alchemy.db import make_tables
+from tagstudio.core.library.alchemy.migrations import migrate_database_schema
 from tagstudio.core.library.alchemy.enums import (
     MAX_SQL_VARIABLES,
     BrowsingState,
@@ -485,6 +486,14 @@ class Library:
             if LibraryPrefs.DB_VERSION.default > db_version:
                 self.set_prefs(LibraryPrefs.DB_VERSION, LibraryPrefs.DB_VERSION.default)
 
+        # Apply index migrations (Priority 1 indexes for 10M file scale)
+        # This creates missing indexes and updates statistics
+        logger.info("[Library] Checking for missing indexes...")
+        created_indexes = migrate_database_schema(self.engine, auto_analyze=True)
+        if created_indexes:
+            total_created = sum(len(indexes) for indexes in created_indexes.values())
+            logger.info(f"[Library] Created {total_created} new indexes for performance optimization")
+
         self.library_dir = library_dir
         return LibraryStatus(success=True, library_path=library_dir)
 
@@ -632,6 +641,14 @@ class Library:
             # Update DB_VERSION
             if LibraryPrefs.DB_VERSION.default > db_version:
                 self.set_prefs(LibraryPrefs.DB_VERSION, LibraryPrefs.DB_VERSION.default)
+
+        # Apply index migrations (Priority 1 indexes for 10M file scale)
+        # This creates missing indexes and updates statistics
+        logger.info("[Library] Checking for missing indexes...")
+        created_indexes = migrate_database_schema(self.engine, auto_analyze=True)
+        if created_indexes:
+            total_created = sum(len(indexes) for indexes in created_indexes.values())
+            logger.info(f"[Library] Created {total_created} new indexes for performance optimization")
 
         # everything is fine, set the library path
         self.library_dir = library_dir
@@ -999,6 +1016,28 @@ class Library:
                 session.query(Entry).where(Entry.id.in_(sub_list)).delete()
             session.commit()
 
+    def analyze_database(self, tables: list[str] | None = None) -> None:
+        """Update database statistics for query optimization.
+
+        Should be called after:
+        - Bulk insert/update operations (>100,000 rows)
+        - Creating new indexes
+        - Major schema changes
+
+        This helps the query planner choose optimal execution strategies.
+
+        Args:
+            tables: Specific tables to analyze (e.g., ['entries', 'tags']).
+                   If None, analyzes all tables.
+
+        Example:
+            >>> library.add_entries(large_entry_list)  # 500K entries
+            >>> library.analyze_database(['entries'])  # Update statistics
+        """
+        from tagstudio.core.library.alchemy.migrations import DatabaseMigration
+
+        DatabaseMigration.analyze_tables(self.engine, tables)
+
     def has_path_entry(self, path: Path) -> bool:
         """Check if item with given path is in library already."""
         with Session(self.engine) as session:
@@ -1027,11 +1066,12 @@ class Library:
         assert self.engine
 
         with Session(self.engine, expire_on_commit=False) as session:
-            statement = select(Entry.id, func.count().over())
+            # Build WHERE clauses (will be used for both ID query and COUNT query)
+            where_clauses = []
 
             if search.ast:
                 start_time = time.time()
-                statement = statement.where(SQLBoolExpressionBuilder(self).visit(search.ast))
+                where_clauses.append(SQLBoolExpressionBuilder(self).visit(search.ast))
                 end_time = time.time()
                 logger.info(
                     f"SQL Expression Builder finished ({format_timespan(end_time - start_time)})"
@@ -1041,10 +1081,15 @@ class Library:
             is_exclude_list = self.prefs(LibraryPrefs.IS_EXCLUDE_LIST)
 
             if extensions and is_exclude_list:
-                statement = statement.where(Entry.suffix.notin_(extensions))
+                where_clauses.append(Entry.suffix.notin_(extensions))
             elif extensions:
-                statement = statement.where(Entry.suffix.in_(extensions))
-            statement = statement.where(Entry.is_sequence.is_(False))
+                where_clauses.append(Entry.suffix.in_(extensions))
+            where_clauses.append(Entry.is_sequence.is_(False))
+
+            # Query 1: Get IDs for current page (without count - enables index usage)
+            statement = select(Entry.id)
+            for clause in where_clauses:
+                statement = statement.where(clause)
 
             sort_on: ColumnExpressionArgument = Entry.id
             match search.sorting_mode:
@@ -1060,20 +1105,30 @@ class Library:
                 statement = statement.limit(page_size).offset(search.page_index * page_size)
 
             logger.info(
-                "searching library",
+                "searching library (IDs only)",
                 filter=search,
                 query_full=str(statement.compile(compile_kwargs={"literal_binds": True})),
             )
 
             start_time = time.time()
-            rows = session.execute(statement).fetchall()
-            ids = []
-            count = 0
-            for row in rows:
-                id, count = row._tuple()
-                ids.append(id)
+            ids = list(session.scalars(statement))
             end_time = time.time()
             logger.info(f"SQL Execution finished ({format_timespan(end_time - start_time)})")
+
+            # Query 2: Get total count separately (can use index without ORDER BY)
+            count_statement = select(func.count(Entry.id))
+            for clause in where_clauses:
+                count_statement = count_statement.where(clause)
+
+            logger.info(
+                "counting results",
+                query_full=str(count_statement.compile(compile_kwargs={"literal_binds": True})),
+            )
+
+            count_start = time.time()
+            count = session.scalar(count_statement) or 0
+            count_end = time.time()
+            logger.info(f"Count query finished ({format_timespan(count_end - count_start)})")
 
             res = SearchResult(
                 total_count=count,
