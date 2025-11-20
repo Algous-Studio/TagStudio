@@ -60,6 +60,7 @@ from tagstudio.core.constants import (
 from tagstudio.core.enums import LibraryPrefs
 from tagstudio.core.library.alchemy import default_color_groups
 from tagstudio.core.library.alchemy.db import make_tables
+from tagstudio.core.library.alchemy.migrations import migrate_database_schema
 from tagstudio.core.library.alchemy.enums import (
     MAX_SQL_VARIABLES,
     BrowsingState,
@@ -485,6 +486,14 @@ class Library:
             if LibraryPrefs.DB_VERSION.default > db_version:
                 self.set_prefs(LibraryPrefs.DB_VERSION, LibraryPrefs.DB_VERSION.default)
 
+        # Apply index migrations (Priority 1 indexes for 10M file scale)
+        # This creates missing indexes and updates statistics
+        logger.info("[Library] Checking for missing indexes...")
+        created_indexes = migrate_database_schema(self.engine, auto_analyze=True)
+        if created_indexes:
+            total_created = sum(len(indexes) for indexes in created_indexes.values())
+            logger.info(f"[Library] Created {total_created} new indexes for performance optimization")
+
         self.library_dir = library_dir
         return LibraryStatus(success=True, library_path=library_dir)
 
@@ -632,6 +641,14 @@ class Library:
             # Update DB_VERSION
             if LibraryPrefs.DB_VERSION.default > db_version:
                 self.set_prefs(LibraryPrefs.DB_VERSION, LibraryPrefs.DB_VERSION.default)
+
+        # Apply index migrations (Priority 1 indexes for 10M file scale)
+        # This creates missing indexes and updates statistics
+        logger.info("[Library] Checking for missing indexes...")
+        created_indexes = migrate_database_schema(self.engine, auto_analyze=True)
+        if created_indexes:
+            total_created = sum(len(indexes) for indexes in created_indexes.values())
+            logger.info(f"[Library] Created {total_created} new indexes for performance optimization")
 
         # everything is fine, set the library path
         self.library_dir = library_dir
@@ -998,6 +1015,28 @@ class Library:
             ]:
                 session.query(Entry).where(Entry.id.in_(sub_list)).delete()
             session.commit()
+
+    def analyze_database(self, tables: list[str] | None = None) -> None:
+        """Update database statistics for query optimization.
+
+        Should be called after:
+        - Bulk insert/update operations (>100,000 rows)
+        - Creating new indexes
+        - Major schema changes
+
+        This helps the query planner choose optimal execution strategies.
+
+        Args:
+            tables: Specific tables to analyze (e.g., ['entries', 'tags']).
+                   If None, analyzes all tables.
+
+        Example:
+            >>> library.add_entries(large_entry_list)  # 500K entries
+            >>> library.analyze_database(['entries'])  # Update statistics
+        """
+        from tagstudio.core.library.alchemy.migrations import DatabaseMigration
+
+        DatabaseMigration.analyze_tables(self.engine, tables)
 
     def has_path_entry(self, path: Path) -> bool:
         """Check if item with given path is in library already."""
