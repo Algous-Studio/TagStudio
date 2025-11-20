@@ -1153,28 +1153,7 @@ class Library:
         assert self.library_dir
 
         with Session(unwrap(self.engine), expire_on_commit=False) as session:
-            if page_size:
-                statement = (
-                    select(Entry.id, func.count().over())
-                    .offset(search.page_index * page_size)
-                    .limit(page_size)
-                )
-            else:
-                statement = select(Entry.id)
-
-            if search.ast:
-                start_time = time.time()
-                statement = statement.where(SQLBoolExpressionBuilder(self).visit(search.ast))
-                end_time = time.time()
-                logger.info(
-                    f"SQL Expression Builder finished ({format_timespan(end_time - start_time)})"
-                )
-            # Use distinct() without column specification to avoid PostgreSQL DISTINCT ON issues
-            statement = statement.distinct()
-
-            # Filter out sequence frames, only show poster frames
-            statement = statement.where(Entry.is_sequence.is_(False))
-
+            # Determine sort column first (needed for PostgreSQL DISTINCT compatibility)
             sort_on: ColumnExpressionArgument = Entry.id
             match search.sorting_mode:
                 case SortingModeEnum.DATE_ADDED:
@@ -1185,6 +1164,30 @@ class Library:
                     sort_on = func.lower(Entry.path)
                 case SortingModeEnum.RANDOM:
                     sort_on = func.sin(Entry.id * search.random_seed)
+
+            # PostgreSQL requires ORDER BY columns to be in SELECT list when using DISTINCT
+            # Add sort column to select if it's different from Entry.id
+            if page_size:
+                statement = (
+                    select(Entry.id, func.count().over(), sort_on)
+                    .offset(search.page_index * page_size)
+                    .limit(page_size)
+                )
+            else:
+                statement = select(Entry.id, sort_on)
+
+            if search.ast:
+                start_time = time.time()
+                statement = statement.where(SQLBoolExpressionBuilder(self).visit(search.ast))
+                end_time = time.time()
+                logger.info(
+                    f"SQL Expression Builder finished ({format_timespan(end_time - start_time)})"
+                )
+            # Use distinct() for PostgreSQL compatibility
+            statement = statement.distinct()
+
+            # Filter out sequence frames, only show poster frames
+            statement = statement.where(Entry.is_sequence.is_(False))
 
             statement = statement.order_by(asc(sort_on) if search.ascending else desc(sort_on))
 
