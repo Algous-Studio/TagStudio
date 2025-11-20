@@ -137,9 +137,14 @@ class SQLBoolExpressionBuilder(BaseVisitor[ColumnElement[bool]]):
                     break
             return Entry.suffix.in_(map(lambda x: x.replace(".", ""), extensions))
         elif node.type == ConstraintType.FileType:
-            return or_(
-                *[Entry.suffix.ilike(ft) for ft in get_filetype_equivalency_list(node.value)]
-            )
+            # Suffix is already stored lowercase in DB (see Entry.__init__)
+            # Use direct IN comparison instead of ilike() to enable index usage
+            # Normalize to lowercase and remove dots
+            normalized = [
+                ext.lower().replace(".", "")
+                for ext in get_filetype_equivalency_list(node.value)
+            ]
+            return Entry.suffix.in_(normalized)
         elif node.type == ConstraintType.Special:  # noqa: SIM102 unnecessary once there is a second special constraint
             if node.value.lower() == "untagged":
                 return ~Entry.id.in_(select(Entry.id).join(TagEntry))

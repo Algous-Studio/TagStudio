@@ -1066,11 +1066,12 @@ class Library:
         assert self.engine
 
         with Session(self.engine, expire_on_commit=False) as session:
-            statement = select(Entry.id, func.count().over())
+            # Build WHERE clauses (will be used for both ID query and COUNT query)
+            where_clauses = []
 
             if search.ast:
                 start_time = time.time()
-                statement = statement.where(SQLBoolExpressionBuilder(self).visit(search.ast))
+                where_clauses.append(SQLBoolExpressionBuilder(self).visit(search.ast))
                 end_time = time.time()
                 logger.info(
                     f"SQL Expression Builder finished ({format_timespan(end_time - start_time)})"
@@ -1080,10 +1081,15 @@ class Library:
             is_exclude_list = self.prefs(LibraryPrefs.IS_EXCLUDE_LIST)
 
             if extensions and is_exclude_list:
-                statement = statement.where(Entry.suffix.notin_(extensions))
+                where_clauses.append(Entry.suffix.notin_(extensions))
             elif extensions:
-                statement = statement.where(Entry.suffix.in_(extensions))
-            statement = statement.where(Entry.is_sequence.is_(False))
+                where_clauses.append(Entry.suffix.in_(extensions))
+            where_clauses.append(Entry.is_sequence.is_(False))
+
+            # Query 1: Get IDs for current page (without count - enables index usage)
+            statement = select(Entry.id)
+            for clause in where_clauses:
+                statement = statement.where(clause)
 
             sort_on: ColumnExpressionArgument = Entry.id
             match search.sorting_mode:
@@ -1099,20 +1105,30 @@ class Library:
                 statement = statement.limit(page_size).offset(search.page_index * page_size)
 
             logger.info(
-                "searching library",
+                "searching library (IDs only)",
                 filter=search,
                 query_full=str(statement.compile(compile_kwargs={"literal_binds": True})),
             )
 
             start_time = time.time()
-            rows = session.execute(statement).fetchall()
-            ids = []
-            count = 0
-            for row in rows:
-                id, count = row._tuple()
-                ids.append(id)
+            ids = list(session.scalars(statement))
             end_time = time.time()
             logger.info(f"SQL Execution finished ({format_timespan(end_time - start_time)})")
+
+            # Query 2: Get total count separately (can use index without ORDER BY)
+            count_statement = select(func.count(Entry.id))
+            for clause in where_clauses:
+                count_statement = count_statement.where(clause)
+
+            logger.info(
+                "counting results",
+                query_full=str(count_statement.compile(compile_kwargs={"literal_binds": True})),
+            )
+
+            count_start = time.time()
+            count = session.scalar(count_statement) or 0
+            count_end = time.time()
+            logger.info(f"Count query finished ({format_timespan(count_end - count_start)})")
 
             res = SearchResult(
                 total_count=count,
