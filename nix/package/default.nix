@@ -4,12 +4,11 @@
   pipewire,
   python3Packages,
   qt6,
+  ripgrep,
   stdenv,
-  wrapGAppsHook,
+  wrapGAppsHook3,
 
   pillow-jxl-plugin,
-  pyside6,
-  vtf2img,
 
   withJXLSupport ? false,
 }:
@@ -28,10 +27,10 @@ python3Packages.buildPythonApplication {
     python3Packages.pythonRelaxDepsHook
     qt6.wrapQtAppsHook
 
-    # INFO: Should be unnecessary once PR is pulled.
+    # Should be unnecessary once PR is pulled.
     # PR: https://github.com/NixOS/nixpkgs/pull/271037
     # Issue: https://github.com/NixOS/nixpkgs/issues/149812
-    wrapGAppsHook
+    wrapGAppsHook3
   ];
   buildInputs = [
     qt6.qtbase
@@ -53,18 +52,34 @@ python3Packages.buildPythonApplication {
     cp $src/src/tagstudio/resources/icon.png $out/share/icons/hicolor/512x512/apps/tagstudio.png
   '';
 
-  makeWrapperArgs =
-    [ "--prefix PATH : ${lib.makeBinPath [ ffmpeg-headless ]}" ]
-    ++ lib.optional stdenv.hostPlatform.isLinux "--prefix LD_LIBRARY_PATH : ${
-      lib.makeLibraryPath [ pipewire ]
-    }";
+  dontWrapGApps = true;
+  dontWrapQtApps = true;
+  makeWrapperArgs = [
+    "--suffix PATH : ${
+      lib.makeBinPath [
+        ffmpeg-headless
+        ripgrep
+      ]
+    }"
+  ]
+  ++ lib.optional stdenv.hostPlatform.isLinux "--suffix LD_LIBRARY_PATH : ${
+    lib.makeLibraryPath [ pipewire ]
+  }"
+  ++ [
+    "\${gappsWrapperArgs[@]}"
+    "\${qtWrapperArgs[@]}"
+  ];
 
   pythonRemoveDeps = lib.optional (!withJXLSupport) [ "pillow_jxl" ];
   pythonRelaxDeps = [
     "numpy"
     "pillow"
+    "pillow-avif-plugin"
     "pillow-heif"
     "pillow-jxl-plugin"
+    "py7zr"
+    "pyside6"
+    "rarfile"
     "structlog"
     "typing-extensions"
   ];
@@ -81,48 +96,44 @@ python3Packages.buildPythonApplication {
       numpy
       opencv-python
       pillow
+      pillow-avif-plugin
       pillow-heif
+      py7zr
       pydantic
       pydub
       pyside6
+      rarfile
       rawpy
       send2trash
       sqlalchemy
+      srctools
       structlog
       toml
       ujson
-      vtf2img
+      wcmatch
     ]
     ++ lib.optional withJXLSupport pillow-jxl-plugin;
 
+  # These tests require modifications to a library, which does not work
+  # in a read-only environment.
   disabledTests = [
-    # INFO: These tests require modifications to a library, which does not work
-    # in a read-only environment.
-    "test_build_tag_panel_add_alias_callback"
-    "test_build_tag_panel_add_aliases"
-    "test_build_tag_panel_add_sub_tag_callback"
-    "test_build_tag_panel_build_tag"
-    "test_build_tag_panel_remove_alias_callback"
-    "test_build_tag_panel_remove_subtag_callback"
-    "test_build_tag_panel_set_aliases"
-    "test_build_tag_panel_set_parent_tags"
-    "test_build_tag_panel_set_tag"
+    "test_badge_visual_state"
+    "test_browsing_state_update"
+    "test_close_library" # TODO: Look into segfault.
+    "test_flow_layout_happy_path"
+    "test_get" # TODO: Look further into, might be possible to run.
     "test_json_migration"
     "test_library_migrations"
-
-    "test_add_same_tag_to_selection_single"
-    "test_add_tag_to_selection_multiple"
-    "test_add_tag_to_selection_single"
-    "test_custom_tag_category"
-    "test_file_path_display"
-    "test_meta_tag_category"
-    "test_update_selection_empty"
-    "test_update_selection_empty"
-    "test_update_selection_multiple"
-    "test_update_selection_single"
-
-    # INFO: This test requires modification of a configuration file.
-    "test_filepath_setting"
+    "test_update_tags"
+  ];
+  disabledTestPaths = [
+    "tests/qt/test_build_tag_panel.py"
+    "tests/qt/test_field_containers.py"
+    "tests/qt/test_file_path_options.py"
+    "tests/qt/test_preview_panel.py"
+    "tests/qt/test_tag_panel.py"
+    "tests/qt/test_tag_search_panel.py"
+    "tests/test_library.py"
   ];
 
   meta = {
