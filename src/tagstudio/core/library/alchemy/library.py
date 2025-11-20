@@ -1696,18 +1696,50 @@ class Library:
         # Check if using PostgreSQL or SQLite
         if isinstance(self.storage_path, str) and self.storage_path.startswith("postgresql"):
             # PostgreSQL backup using pg_dump
-            subprocess.run(
-                ["pg_dump", "-f", str(target_path), self.engine.url.database],
-                check=True,
-            )
+            try:
+                # Check if pg_dump is available
+                from shutil import which
+
+                pg_dump_path = which("pg_dump")
+                if not pg_dump_path:
+                    logger.warning(
+                        "[Library] pg_dump not found in PATH. Skipping PostgreSQL backup. "
+                        "Install PostgreSQL tools to enable automatic backups."
+                    )
+                    # Create an empty marker file to indicate backup was skipped
+                    target_path.write_text(
+                        "# PostgreSQL backup skipped - pg_dump not available\n"
+                        f"# Database: {self.engine.url.database}\n"
+                        f"# Connection: {self.storage_path}\n"
+                    )
+                    return target_path
+
+                subprocess.run(
+                    ["pg_dump", "-f", str(target_path), self.engine.url.database],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                logger.info("Library backup saved to disk.", path=target_path)
+            except subprocess.CalledProcessError as e:
+                logger.error(
+                    "[Library] pg_dump failed. Backup not created.",
+                    error=e.stderr if e.stderr else str(e),
+                )
+                # Create a marker file indicating backup failed
+                target_path.write_text(
+                    f"# PostgreSQL backup failed\n# Error: {e.stderr if e.stderr else str(e)}\n"
+                )
+            except Exception as e:
+                logger.error("[Library] Unexpected error during PostgreSQL backup", error=str(e))
+                target_path.write_text(f"# PostgreSQL backup failed\n# Error: {str(e)}\n")
         else:
             # SQLite backup using file copy
             shutil.copy2(
                 self.library_dir / TS_FOLDER_NAME / SQL_FILENAME,
                 target_path,
             )
-
-        logger.info("Library backup saved to disk.", path=target_path)
+            logger.info("Library backup saved to disk.", path=target_path)
 
         return target_path
 
