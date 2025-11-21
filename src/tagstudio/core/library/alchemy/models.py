@@ -6,7 +6,7 @@ from datetime import datetime as dt
 from pathlib import Path
 from typing import override
 
-from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, Integer, event
+from sqlalchemy import JSON, ForeignKey, ForeignKeyConstraint, Index, Integer, event
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing_extensions import deprecated
 
@@ -45,6 +45,13 @@ class TagAlias(Base):
     name: Mapped[str] = mapped_column(nullable=False)
     tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id"))
     tag: Mapped["Tag"] = relationship(back_populates="aliases")
+
+    __table_args__ = (
+        # Priority 2: Alias name searches
+        Index("ix_tag_aliases_name", "name"),
+        # Priority 2: FK lookup for aliases by tag
+        Index("ix_tag_aliases_tag_id", "tag_id"),
+    )
 
     def __init__(self, name: str, tag_id: int | None = None):
         self.name = name
@@ -111,6 +118,10 @@ class Tag(Base):
         ForeignKeyConstraint(
             [color_namespace, color_slug], [TagColorGroup.namespace, TagColorGroup.slug]
         ),
+        # Priority 2: Tag name searches and sorting
+        Index("ix_tags_name", "name"),
+        # Priority 4: Category tag filtering
+        Index("ix_tags_is_category", "is_category"),
         {"sqlite_autoincrement": True},
     )
 
@@ -216,6 +227,19 @@ class Entry(Base):
         cascade="all, delete",
     )
     is_sequence: Mapped[bool] = mapped_column(nullable=False, default=False)
+
+    __table_args__ = (
+        # Priority 1 (CRITICAL): Most common query patterns
+        Index("ix_entries_folder_id", "folder_id"),
+        Index("ix_entries_suffix", "suffix"),
+        Index("ix_entries_is_sequence", "is_sequence"),
+        Index("ix_entries_folder_sequence", "folder_id", "is_sequence"),
+        # Priority 2 (HIGH): Sorting operations
+        Index("ix_entries_date_modified", "date_modified"),
+        Index("ix_entries_date_created", "date_created"),
+        Index("ix_entries_date_added", "date_added"),
+        Index("ix_entries_filename", "filename"),
+    )
 
     @property
     def fields(self) -> list[BaseField]:

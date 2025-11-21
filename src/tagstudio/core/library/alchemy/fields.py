@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, override
 
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, Index
 from sqlalchemy.orm import Mapped, declared_attr, mapped_column, relationship
 
 from tagstudio.core.library.alchemy.db import Base
@@ -61,6 +61,15 @@ class BooleanField(BaseField):
 
     value: Mapped[bool]
 
+    __table_args__ = (
+        # Priority 3: Field lookups by entry
+        Index("ix_boolean_fields_entry_id", "entry_id"),
+        # Priority 3: Field lookups by type
+        Index("ix_boolean_fields_type_key", "type_key"),
+        # Priority 3: Composite lookup for specific field of entry
+        Index("ix_boolean_fields_entry_type", "entry_id", "type_key"),
+    )
+
     def __key(self):
         return (self.type, self.value)
 
@@ -75,6 +84,15 @@ class TextField(BaseField):
     __tablename__ = "text_fields"
 
     value: Mapped[str | None]
+
+    __table_args__ = (
+        # Priority 3: Field lookups by entry
+        Index("ix_text_fields_entry_id", "entry_id"),
+        # Priority 3: Field lookups by type
+        Index("ix_text_fields_type_key", "type_key"),
+        # Priority 3: Composite lookup for specific field of entry
+        Index("ix_text_fields_entry_type", "entry_id", "type_key"),
+    )
 
     def __key(self) -> tuple[ValueType, str | None]:
         return self.type, self.value
@@ -92,6 +110,15 @@ class DatetimeField(BaseField):
     __tablename__ = "datetime_fields"
 
     value: Mapped[str | None]
+
+    __table_args__ = (
+        # Priority 3: Field lookups by entry
+        Index("ix_datetime_fields_entry_id", "entry_id"),
+        # Priority 3: Field lookups by type
+        Index("ix_datetime_fields_type_key", "type_key"),
+        # Priority 3: Composite lookup for specific field of entry
+        Index("ix_datetime_fields_entry_type", "entry_id", "type_key"),
+    )
 
     def __key(self):
         return (self.type, self.value)

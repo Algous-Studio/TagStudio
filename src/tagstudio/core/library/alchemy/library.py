@@ -519,6 +519,8 @@ class Library:
                     self.__apply_db100_parent_repairs(session)
                 if db_version < 102:
                     self.__apply_db102_repairs(session)
+                if db_version < 103:
+                    self.__apply_db103_index_creation(session)
 
             if DB_VERSION > db_version:
                 self.set_prefs(DB_VERSION_LEGACY_KEY, DB_VERSION)
@@ -707,6 +709,8 @@ class Library:
                     self.__apply_db100_parent_repairs(session)
                 if loaded_db_version < 102:
                     self.__apply_db102_repairs(session)
+                if loaded_db_version < 103:
+                    self.__apply_db103_index_creation(session)
 
                 # Convert file extension list to ts_ignore file, if a .ts_ignore file does not exist
                 self.migrate_sql_to_ts_ignore(library_dir)
@@ -853,6 +857,74 @@ class Library:
             session.execute(stmt)
             session.commit()
             logger.info("[Library][Migration] Verified TagParent table data")
+
+    def __apply_db103_index_creation(self, session: Session):
+        """Create performance indexes for 10M+ file library support (DB_VERSION 103)."""
+        logger.info("[Library][Migration] Creating performance indexes for DB_VERSION 103...")
+
+        # List of all indexes to create
+        # Note: SQLAlchemy with create_all() will create these for new databases,
+        # but for existing databases we need to create them explicitly
+        indexes = [
+            # Priority 1 (CRITICAL): Entries table
+            "CREATE INDEX IF NOT EXISTS ix_entries_folder_id ON entries(folder_id)",
+            "CREATE INDEX IF NOT EXISTS ix_entries_suffix ON entries(suffix)",
+            "CREATE INDEX IF NOT EXISTS ix_entries_is_sequence ON entries(is_sequence)",
+            "CREATE INDEX IF NOT EXISTS ix_entries_folder_sequence ON entries(folder_id, is_sequence)",
+
+            # Priority 1 (CRITICAL): Tag-Entry join table
+            "CREATE INDEX IF NOT EXISTS ix_tag_entries_entry_id ON tag_entries(entry_id)",
+            "CREATE INDEX IF NOT EXISTS ix_tag_entries_tag_id ON tag_entries(tag_id)",
+
+            # Priority 2 (HIGH): Entries sorting
+            "CREATE INDEX IF NOT EXISTS ix_entries_date_modified ON entries(date_modified)",
+            "CREATE INDEX IF NOT EXISTS ix_entries_date_created ON entries(date_created)",
+            "CREATE INDEX IF NOT EXISTS ix_entries_date_added ON entries(date_added)",
+            "CREATE INDEX IF NOT EXISTS ix_entries_filename ON entries(filename)",
+
+            # Priority 2 (HIGH): Tags table
+            "CREATE INDEX IF NOT EXISTS ix_tags_name ON tags(name)",
+            "CREATE INDEX IF NOT EXISTS ix_tags_is_category ON tags(is_category)",
+
+            # Priority 2 (HIGH): Tag aliases
+            "CREATE INDEX IF NOT EXISTS ix_tag_aliases_name ON tag_aliases(name)",
+            "CREATE INDEX IF NOT EXISTS ix_tag_aliases_tag_id ON tag_aliases(tag_id)",
+
+            # Priority 3 (MEDIUM): Text fields
+            "CREATE INDEX IF NOT EXISTS ix_text_fields_entry_id ON text_fields(entry_id)",
+            "CREATE INDEX IF NOT EXISTS ix_text_fields_type_key ON text_fields(type_key)",
+            "CREATE INDEX IF NOT EXISTS ix_text_fields_entry_type ON text_fields(entry_id, type_key)",
+
+            # Priority 3 (MEDIUM): Datetime fields
+            "CREATE INDEX IF NOT EXISTS ix_datetime_fields_entry_id ON datetime_fields(entry_id)",
+            "CREATE INDEX IF NOT EXISTS ix_datetime_fields_type_key ON datetime_fields(type_key)",
+            "CREATE INDEX IF NOT EXISTS ix_datetime_fields_entry_type ON datetime_fields(entry_id, type_key)",
+
+            # Priority 3 (MEDIUM): Boolean fields
+            "CREATE INDEX IF NOT EXISTS ix_boolean_fields_entry_id ON boolean_fields(entry_id)",
+            "CREATE INDEX IF NOT EXISTS ix_boolean_fields_type_key ON boolean_fields(type_key)",
+            "CREATE INDEX IF NOT EXISTS ix_boolean_fields_entry_type ON boolean_fields(entry_id, type_key)",
+
+            # Priority 4 (LOW): Tag hierarchy
+            "CREATE INDEX IF NOT EXISTS ix_tag_parents_child_id ON tag_parents(child_id)",
+        ]
+
+        with session:
+            for idx, index_sql in enumerate(indexes, 1):
+                try:
+                    session.execute(text(index_sql))
+                    logger.info(
+                        f"[Library][Migration] Created index {idx}/{len(indexes)}",
+                        index=index_sql.split("IF NOT EXISTS ")[1].split(" ON ")[0],
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[Library][Migration] Could not create index {idx}/{len(indexes)}",
+                        error=e,
+                    )
+
+            session.commit()
+            logger.info("[Library][Migration] Completed index creation for DB_VERSION 103")
 
     def migrate_sql_to_ts_ignore(self, library_dir: Path):
         # Do not continue if existing '.ts_ignore' file is found
