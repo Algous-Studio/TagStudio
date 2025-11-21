@@ -1243,7 +1243,9 @@ class Library:
             sort_on: ColumnExpressionArgument = Entry.id
             match search.sorting_mode:
                 case SortingModeEnum.DATE_ADDED:
-                    sort_on = Entry.id
+                    # Use date_added, with NULLs sorted last
+                    # For entries without date_added (old data), they appear at the end
+                    sort_on = Entry.date_added
                 case SortingModeEnum.FILE_NAME:
                     sort_on = func.lower(Entry.filename)
                 case SortingModeEnum.PATH:
