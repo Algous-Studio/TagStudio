@@ -1105,6 +1105,9 @@ class ThumbRenderer(QObject):
                 logger.warning("EXR array has invalid shape", filepath=filepath, shape=raw_array.shape)
                 return None
 
+            # Replace NaN and Inf values with 0 to avoid runtime warnings
+            raw_array = np.nan_to_num(raw_array, nan=0.0, posinf=1.0, neginf=0.0)
+
             # Determine number of channels
             num_channels = raw_array.shape[2] if len(raw_array.shape) == 3 else 1
 
@@ -1113,6 +1116,8 @@ class ThumbRenderer(QObject):
                 # Grayscale EXR
                 gamma = 2.2
                 array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
+                # Ensure values are in valid range before casting
+                array_gamma = np.clip(array_gamma, 0, 1)
                 array = (array_gamma * 255).astype(np.uint8)
                 im = Image.fromarray(array, mode="L")
                 # Convert to RGB for consistency
@@ -1122,6 +1127,8 @@ class ThumbRenderer(QObject):
                 # Grayscale + Alpha
                 gamma = 2.2
                 array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
+                # Ensure values are in valid range before casting
+                array_gamma = np.clip(array_gamma, 0, 1)
                 array = (array_gamma * 255).astype(np.uint8)
 
                 # Create RGBA by duplicating grayscale channel
@@ -1142,6 +1149,8 @@ class ThumbRenderer(QObject):
 
                 gamma = 2.2
                 array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
+                # Ensure values are in valid range before casting
+                array_gamma = np.clip(array_gamma, 0, 1)
                 array = (array_gamma * 255).astype(np.uint8)
 
                 im = Image.fromarray(array, mode="RGB")
@@ -1154,6 +1163,8 @@ class ThumbRenderer(QObject):
                 gamma = 2.2
                 # Only use first 4 channels
                 array_gamma = np.power(np.clip(raw_array[..., :4], 0, 1), 1 / gamma)
+                # Ensure values are in valid range before casting
+                array_gamma = np.clip(array_gamma, 0, 1)
                 array = (array_gamma * 255).astype(np.uint8)
 
                 im = Image.fromarray(array, mode="RGBA")
