@@ -931,6 +931,15 @@ class Library:
             session.commit()
             logger.info("[Library][Migration] Completed index creation for DB_VERSION 103")
 
+            # Update query planner statistics so PostgreSQL knows about the new indexes
+            logger.info("[Library][Migration] Updating query planner statistics...")
+            try:
+                session.execute(text("ANALYZE"))
+                session.commit()
+                logger.info("[Library][Migration] Query planner statistics updated")
+            except Exception as e:
+                logger.warning("[Library][Migration] Could not update statistics", error=e)
+
     def migrate_sql_to_ts_ignore(self, library_dir: Path):
         # Do not continue if existing '.ts_ignore' file is found
         if Path(library_dir / TS_FOLDER_NAME / IGNORE_NAME).exists():
