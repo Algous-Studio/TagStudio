@@ -41,6 +41,15 @@ class PreviewThumb(PreviewThumbView):
 
         if filepath.is_dir():
             pass
+        elif ext == ".exr":
+            # Handle EXR files with cv2 instead of PIL to avoid hangs
+            try:
+                raw_array = cv2.imread(str(filepath), cv2.IMREAD_UNCHANGED)
+                if raw_array is not None and len(raw_array.shape) >= 2:
+                    stats.height = raw_array.shape[0]
+                    stats.width = raw_array.shape[1]
+            except Exception as e:
+                logger.debug("[PreviewThumb] Could not get EXR stats with cv2", filepath=filepath, error=type(e).__name__)
         elif MediaCategories.IMAGE_RAW_TYPES.contains(ext, mime_fallback=True):
             try:
                 with rawpy.imread(str(filepath)) as raw:
