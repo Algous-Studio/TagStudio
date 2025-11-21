@@ -1793,11 +1793,37 @@ class Library:
                     )
                     return target_path
 
+                # Build pg_dump command with connection parameters
+                cmd = ["pg_dump", "-f", str(target_path)]
+
+                # Add host (required for TCP connections)
+                if self.engine.url.host:
+                    cmd.extend(["-h", self.engine.url.host])
+
+                # Add port if specified
+                if self.engine.url.port:
+                    cmd.extend(["-p", str(self.engine.url.port)])
+
+                # Add username
+                if self.engine.url.username:
+                    cmd.extend(["-U", self.engine.url.username])
+
+                # Add database name
+                cmd.append(self.engine.url.database)
+
+                # Set password via environment variable if available
+                env = None
+                if self.engine.url.password:
+                    import os
+                    env = os.environ.copy()
+                    env["PGPASSWORD"] = self.engine.url.password
+
                 subprocess.run(
-                    ["pg_dump", "-f", str(target_path), self.engine.url.database],
+                    cmd,
                     check=True,
                     capture_output=True,
                     text=True,
+                    env=env,
                 )
                 logger.info("Library backup saved to disk.", path=target_path)
             except subprocess.CalledProcessError as e:
