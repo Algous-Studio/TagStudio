@@ -1092,19 +1092,73 @@ class ThumbRenderer(QObject):
         """
         im: Image.Image | None = None
         try:
-            # Load the EXR data to an array and rotate the color space from BGRA -> RGBA
+            # Load the EXR data to an array
             raw_array = cv2.imread(str(filepath), cv2.IMREAD_UNCHANGED)
-            raw_array[..., :3] = raw_array[..., 2::-1]
 
-            # Correct the gamma of the raw array
-            gamma = 2.2
-            array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
-            array = (array_gamma * 255).astype(np.uint8)
+            # Check if the file was successfully loaded
+            if raw_array is None:
+                logger.debug("cv2.imread returned None for EXR file", filepath=filepath)
+                return None
 
-            im = Image.fromarray(array, mode="RGBA")
+            # Validate array has proper dimensions
+            if len(raw_array.shape) < 2:
+                logger.warning("EXR array has invalid shape", filepath=filepath, shape=raw_array.shape)
+                return None
 
-            # Paste solid background
-            if im.mode == "RGBA":
+            # Determine number of channels
+            num_channels = raw_array.shape[2] if len(raw_array.shape) == 3 else 1
+
+            # Handle different channel configurations
+            if num_channels == 1:
+                # Grayscale EXR
+                gamma = 2.2
+                array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
+                array = (array_gamma * 255).astype(np.uint8)
+                im = Image.fromarray(array, mode="L")
+                # Convert to RGB for consistency
+                im = im.convert("RGB")
+
+            elif num_channels == 2:
+                # Grayscale + Alpha
+                gamma = 2.2
+                array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
+                array = (array_gamma * 255).astype(np.uint8)
+
+                # Create RGBA by duplicating grayscale channel
+                gray = array[..., 0]
+                alpha = array[..., 1]
+                rgb_array = np.stack([gray, gray, gray, alpha], axis=2)
+
+                im = Image.fromarray(rgb_array, mode="RGBA")
+
+                # Paste on solid background
+                new_bg = Image.new("RGB", im.size, color="#1e1e1e")
+                new_bg.paste(im, mask=im.getchannel(3))
+                im = new_bg
+
+            elif num_channels == 3:
+                # RGB (no alpha) - rotate color space from BGR to RGB
+                raw_array[..., :3] = raw_array[..., 2::-1]
+
+                gamma = 2.2
+                array_gamma = np.power(np.clip(raw_array, 0, 1), 1 / gamma)
+                array = (array_gamma * 255).astype(np.uint8)
+
+                im = Image.fromarray(array, mode="RGB")
+
+            elif num_channels >= 4:
+                # RGBA or more (take first 4 channels)
+                # Rotate color space from BGRA to RGBA
+                raw_array[..., :3] = raw_array[..., 2::-1]
+
+                gamma = 2.2
+                # Only use first 4 channels
+                array_gamma = np.power(np.clip(raw_array[..., :4], 0, 1), 1 / gamma)
+                array = (array_gamma * 255).astype(np.uint8)
+
+                im = Image.fromarray(array, mode="RGBA")
+
+                # Paste on solid background
                 new_bg = Image.new("RGB", im.size, color="#1e1e1e")
                 new_bg.paste(im, mask=im.getchannel(3))
                 im = new_bg
