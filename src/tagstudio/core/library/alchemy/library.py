@@ -519,6 +519,7 @@ class Library:
                     self.__apply_db100_parent_repairs(session)
                 if db_version < 102:
                     self.__apply_db102_repairs(session)
+                # PostgreSQL index optimization for large-scale libraries (10M+ entries)
                 if db_version < 103:
                     self.__apply_db103_index_creation(session)
 
@@ -709,8 +710,8 @@ class Library:
                     self.__apply_db100_parent_repairs(session)
                 if loaded_db_version < 102:
                     self.__apply_db102_repairs(session)
-                if loaded_db_version < 103:
-                    self.__apply_db103_index_creation(session)
+                # Note: Index creation (DB_VERSION 103) is PostgreSQL-only
+                # SQLite databases are typically smaller and don't need these indexes
 
                 # Convert file extension list to ts_ignore file, if a .ts_ignore file does not exist
                 self.migrate_sql_to_ts_ignore(library_dir)
@@ -859,7 +860,11 @@ class Library:
             logger.info("[Library][Migration] Verified TagParent table data")
 
     def __apply_db103_index_creation(self, session: Session):
-        """Create performance indexes for 10M+ file library support (DB_VERSION 103)."""
+        """Create performance indexes for 10M+ file library support (DB_VERSION 103).
+
+        PostgreSQL only - SQLite databases are typically smaller and don't benefit
+        from these indexes. The write overhead would hurt performance for small databases.
+        """
         logger.info("[Library][Migration] Creating performance indexes for DB_VERSION 103...")
 
         # List of all indexes to create
